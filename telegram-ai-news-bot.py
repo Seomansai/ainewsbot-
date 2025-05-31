@@ -566,13 +566,13 @@ class AINewsBot:
             for news in news_list:
                 try:
                     # Пытаемся зарезервировать новость
-                    self.conn.execute(
+                    cursor = self.conn.execute(
                         "INSERT OR IGNORE INTO published_news (link, title, source, published_date, status) VALUES (?, ?, ?, ?, 'reserved')",
                         (news.link, news.title, news.source, news.published)
                     )
                     
                     # Проверяем, была ли вставка успешной
-                    if self.conn.rowcount > 0:
+                    if cursor.rowcount > 0:
                         reserved_news.append(news)
                         logger.info(f"🔒 Зарезервировано: {news.title[:50]}...")
                     else:
