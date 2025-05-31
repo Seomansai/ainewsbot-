@@ -239,22 +239,44 @@ class AINewsBot:
         
         # RSS источники AI новостей
         self.rss_sources = {
+            # Английские источники
             'AI News': 'https://www.artificialintelligence-news.com/feed/',
             'MIT Technology Review': 'https://www.technologyreview.com/feed/',
             'The Verge AI': 'https://www.theverge.com/ai-artificial-intelligence/rss/index.xml',
             'TechCrunch AI': 'https://techcrunch.com/category/artificial-intelligence/feed/',
             'VentureBeat AI': 'https://venturebeat.com/ai/feed/',
             'Ars Technica': 'https://feeds.arstechnica.com/arstechnica/technology-lab',
-            'AI Magazine': 'https://magazine.aaai.org/index.php/aimagazine/gateway/plugin/WebFeedGatewayPlugin/atom'
+            'AI Magazine': 'https://magazine.aaai.org/index.php/aimagazine/gateway/plugin/WebFeedGatewayPlugin/atom',
+            
+            # Российские источники
+            'Хабр AI': 'https://habr.com/ru/rss/hub/artificial_intelligence/',
+            'Хабр ML': 'https://habr.com/ru/rss/hub/machine_learning/',
+            'Хабр DataScience': 'https://habr.com/ru/rss/hub/data_mining/',
+            'CNews': 'https://www.cnews.ru/inc/rss/news.xml',
+            '3DNews': 'https://3dnews.ru/news/rss/',
+            'Tproger': 'https://tproger.ru/feed/',
+            'Комсомольская правда Техно': 'https://www.kp.ru/rss/allsection.xml',
+            'Российская газета Технологии': 'https://rg.ru/xml/index.xml'
         }
         
-        # Ключевые слова для фильтрации AI новостей
+        # Ключевые слова для фильтрации AI новостей (английские и русские)
         self.ai_keywords = [
+            # Английские ключевые слова
             'ai', 'artificial intelligence', 'machine learning', 'neural network',
             'deep learning', 'chatgpt', 'openai', 'automation', 'robotics',
             'algorithm', 'nlp', 'computer vision', 'tensorflow', 'pytorch',
             'gpt', 'llm', 'large language model', 'generative ai', 'anthropic',
-            'claude', 'gemini', 'bard', 'hugging face', 'transformer'
+            'claude', 'gemini', 'bard', 'hugging face', 'transformer',
+            
+            # Русские ключевые слова
+            'ии', 'искусственный интеллект', 'машинное обучение', 'нейронная сеть',
+            'нейросеть', 'глубокое обучение', 'чатгпт', 'чат-gpt', 'автоматизация',
+            'роботика', 'алгоритм', 'нлп', 'компьютерное зрение', 'тензорфлоу',
+            'pytorch', 'языковая модель', 'генеративный ии', 'антропик',
+            'клод', 'гемини', 'бард', 'трансформер', 'openai', 'нейронка',
+            'ml', 'dl', 'data science', 'датасайенс', 'большие данные',
+            'bigdata', 'анализ данных', 'yandex gpt', 'яндекс гпт', 'сбер',
+            'gigachat', 'гигачат', 'kandinsky', 'кандинский', 'rubert'
         ]
         
         # Thread-safe база данных
@@ -342,7 +364,23 @@ class AINewsBot:
             except Exception as e:
                 logger.error(f"Ошибка сохранения в БД: {e}")
     
-    async def translate_text(self, text: str, quality: str = "medium") -> str:
+    def detect_language(self, text: str) -> str:
+        """Определение языка текста (ru или en)"""
+        # Простой алгоритм на основе наличия кириллицы
+        cyrillic_chars = sum(1 for char in text if 'а' <= char.lower() <= 'я')
+        latin_chars = sum(1 for char in text if 'a' <= char.lower() <= 'z')
+        
+        if cyrillic_chars > latin_chars:
+            return 'ru'
+        else:
+            return 'en'
+    
+    def is_russian_source(self, source_name: str) -> bool:
+        """Проверка, является ли источник российским"""
+        russian_sources = ['Хабр AI', 'Хабр ML', 'Хабр DataScience', 'CNews', '3DNews', 'Tproger', 'Комсомольская правда Техно', 'Российская газета Технологии']
+        return source_name in russian_sources
+    
+    async def translate_text(self, text: str, quality: str = "medium", language: str = "en") -> str:
         """Создание краткого пересказа с контролем расходов"""
         try:
             if len(text) > 3000:
@@ -370,7 +408,7 @@ class AINewsBot:
                     model = "meta-llama/llama-3.1-8b-instruct:free"
                 
                 # API запрос с retry
-                response = await self._make_api_request(model, text)
+                response = await self._make_api_request(model, text, language)
                 
                 # Запись расходов
                 if hasattr(response, 'usage') and response.usage:
@@ -382,32 +420,58 @@ class AINewsBot:
                 
                 return response.choices[0].message.content.strip()
             else:
-                # Fallback на Google Translator
-                from deep_translator import GoogleTranslator
-                translator = GoogleTranslator(source='en', target='ru')
-                return translator.translate(text)
+                # Fallback на Google Translator для английских новостей
+                if language == 'en':
+                    from deep_translator import GoogleTranslator
+                    translator = GoogleTranslator(source='en', target='ru')
+                    return translator.translate(text)
+                else:
+                    # Для русских новостей возвращаем как есть
+                    return text
                 
         except Exception as e:
             logger.error(f"Ошибка создания пересказа: {e}")
-            # Fallback на Google Translator при ошибке
+            # Fallback обработка
             try:
-                from deep_translator import GoogleTranslator
-                translator = GoogleTranslator(source='en', target='ru')
-                return translator.translate(text)
+                if language == 'en':
+                    from deep_translator import GoogleTranslator
+                    translator = GoogleTranslator(source='en', target='ru')
+                    return translator.translate(text)
+                else:
+                    return text
             except Exception as fallback_error:
-                logger.error(f"Ошибка fallback перевода: {fallback_error}")
+                logger.error(f"Ошибка fallback обработки: {fallback_error}")
                 return text  # Возвращаем оригинальный текст при ошибке
     
     @retry_with_backoff(max_attempts=3, base_delay=1.0)
-    async def _make_api_request(self, model: str, text: str):
+    async def _make_api_request(self, model: str, text: str, language: str = "en"):
         """API запрос с retry и rate limiting"""
         try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": """Ты опытный технический журналист, специализирующийся на новостях об искусственном интеллекте.
+            if language == 'ru':
+                # Для русских новостей - создаем краткий пересказ
+                system_prompt = """Ты опытный технический журналист, специализирующийся на новостях об искусственном интеллекте.
+
+ЗАДАЧА: Создай краткий, информативный пересказ русской новости об ИИ.
+
+ПРАВИЛА:
+1. Пиши простым, понятным языком
+2. Выдели главную суть новости в 1-2 предложениях
+3. Добавь важные детали (цифры, компании, технологии)
+4. Сохраняй технические термины: ИИ, ML, API, GPU, LLM, нейросеть
+5. Объем: 2-4 предложения максимум
+6. Стиль: как краткая новостная сводка
+7. Убери лишние детали и рекламные элементы
+
+ПРИМЕР:
+Оригинал: "Яндекс объявил о выпуске новой версии YandexGPT с улучшенными возможностями..."
+Пересказ: "Яндекс представил обновленную версию YandexGPT с улучшенными возможностями понимания контекста. Новая модель показывает значительно лучшие результаты в задачах анализа текста."
+
+Создавай пересказ для русскоязычной аудитории."""
+                
+                user_content = f"Создай краткий пересказ этой новости:\n\n{text}"
+            else:
+                # Для английских новостей - переводим в краткий пересказ
+                system_prompt = """Ты опытный технический журналист, специализирующийся на новостях об искусственном интеллекте.
 
 ЗАДАЧА: Создай краткий, информативный пересказ новости на русском языке.
 
@@ -424,11 +488,14 @@ class AINewsBot:
 Пересказ: "Компания OpenAI представила обновленную версию GPT-4 Turbo с улучшенными возможностями логического мышления. Новая модель демонстрирует значительно лучшую производительность в задачах, требующих многоступенчатого анализа."
 
 Создавай пересказ для русскоязычной аудитории."""
-                    },
-                    {
-                        "role": "user", 
-                        "content": f"Создай краткий пересказ этой новости:\n\nЗаголовок: {text.split('.')[0] if '.' in text else text[:100]}\nТекст: {text}"
-                    }
+                
+                user_content = f"Создай краткий пересказ этой новости:\n\nЗаголовок: {text.split('.')[0] if '.' in text else text[:100]}\nТекст: {text}"
+            
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
                 ],
                 temperature=0.3,
                 max_tokens=800
@@ -483,14 +550,23 @@ class AINewsBot:
         """Создание пересказов новостей на русском языке"""
         for news in news_list:
             try:
-                logger.info(f"Создаем пересказ новости: {news.title[:50]}...")
+                # Определяем язык и источник
+                language = self.detect_language(news.title + " " + news.description)
+                is_russian = self.is_russian_source(news.source)
+                
+                # Логирование
+                lang_emoji = "🇷🇺" if language == 'ru' or is_russian else "🇺🇸"
+                logger.info(f"{lang_emoji} Создаем пересказ новости: {news.title[:50]}...")
                 
                 # Создание пересказа заголовка (используем исходный заголовок)
                 news.translated_title = news.title
                 
                 # Создание пересказа описания
                 full_text = f"{news.title}. {news.description}"
-                news.translated_description = await self.translate_text(full_text)
+                
+                # Используем соответствующий язык для обработки
+                detected_lang = 'ru' if (language == 'ru' or is_russian) else 'en'
+                news.translated_description = await self.translate_text(full_text, "medium", detected_lang)
                 
                 # Небольшая задержка между запросами
                 await asyncio.sleep(2)
@@ -516,6 +592,10 @@ class AINewsBot:
         summary = re.sub(r'<[^>]+>', '', summary)
         title = re.sub(r'<[^>]+>', '', title)
         
+        # Определение флага источника
+        is_russian = self.is_russian_source(news.source)
+        source_flag = "🇷🇺" if is_russian else "🌍"
+        
         # Форматирование сообщения
         message = f"🤖 <b>AI Новости</b>\n\n"
         
@@ -523,8 +603,8 @@ class AINewsBot:
             # Основной пересказ
             message += f"{summary}\n\n"
         
-        # Информация об источнике
-        message += f"📰 <b>Источник:</b> {news.source}\n"
+        # Информация об источнике с флагом
+        message += f"{source_flag} <b>Источник:</b> {news.source}\n"
         message += f"🔗 <b><a href='{news.link}'>Читать оригинал статьи</a></b>"
         
         return message
