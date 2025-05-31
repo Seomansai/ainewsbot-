@@ -276,46 +276,53 @@ class AINewsBot:
         else:
             logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется Google Translator")
         
-        # RSS источники AI новостей
+        # RSS источники AI новостей (убираем источники с низким качеством фильтрации)
         self.rss_sources = {
-            # Английские источники
+            # Английские источники (проверенные)
             'AI News': 'https://www.artificialintelligence-news.com/feed/',
             'MIT Technology Review': 'https://www.technologyreview.com/feed/',
             'The Verge AI': 'https://www.theverge.com/ai-artificial-intelligence/rss/index.xml',
             'TechCrunch AI': 'https://techcrunch.com/category/artificial-intelligence/feed/',
             'VentureBeat AI': 'https://venturebeat.com/ai/feed/',
             'Ars Technica': 'https://feeds.arstechnica.com/arstechnica/technology-lab',
-            'AI Magazine': 'https://magazine.aaai.org/index.php/aimagazine/gateway/plugin/WebFeedGatewayPlugin/atom',
             
-            # Российские источники
+            # Российские источники (только специализированные разделы)
             'Хабр AI': 'https://habr.com/ru/rss/hub/artificial_intelligence/',
             'Хабр ML': 'https://habr.com/ru/rss/hub/machine_learning/',
             'Хабр DataScience': 'https://habr.com/ru/rss/hub/data_mining/',
-            'CNews': 'https://www.cnews.ru/inc/rss/news.xml',
+            'CNews AI': 'https://www.cnews.ru/inc/rss/news.xml',
             '3DNews': 'https://3dnews.ru/news/rss/',
             'Tproger': 'https://tproger.ru/feed/',
-            'Комсомольская правда Техно': 'https://www.kp.ru/rss/allsection.xml',
-            'Российская газета Технологии': 'https://rg.ru/xml/index.xml'
         }
         
-        # Ключевые слова для фильтрации AI новостей (английские и русские)
+        # Строгие ключевые слова для AI (только релевантные)
         self.ai_keywords = [
-            # Английские ключевые слова
-            'ai', 'artificial intelligence', 'machine learning', 'neural network',
-            'deep learning', 'chatgpt', 'openai', 'automation', 'robotics',
-            'algorithm', 'nlp', 'computer vision', 'tensorflow', 'pytorch',
-            'gpt', 'llm', 'large language model', 'generative ai', 'anthropic',
-            'claude', 'gemini', 'bard', 'hugging face', 'transformer',
+            # Основные AI термины
+            'artificial intelligence', 'machine learning', 'neural network', 'deep learning',
+            'chatgpt', 'gpt', 'openai', 'claude', 'anthropic', 'gemini', 'bard',
+            'llm', 'large language model', 'generative ai', 'transformer',
+            'computer vision', 'nlp', 'natural language processing',
+            'tensorflow', 'pytorch', 'hugging face',
             
-            # Русские ключевые слова
-            'ии', 'искусственный интеллект', 'машинное обучение', 'нейронная сеть',
-            'нейросеть', 'глубокое обучение', 'чатгпт', 'чат-gpt', 'автоматизация',
-            'роботика', 'алгоритм', 'нлп', 'компьютерное зрение', 'тензорфлоу',
-            'pytorch', 'языковая модель', 'генеративный ии', 'антропик',
-            'клод', 'гемини', 'бард', 'трансформер', 'openai', 'нейронка',
-            'ml', 'dl', 'data science', 'датасайенс', 'большие данные',
-            'bigdata', 'анализ данных', 'yandex gpt', 'яндекс гпт', 'сбер',
-            'gigachat', 'гигачат', 'kandinsky', 'кандинский', 'rubert'
+            # Русские AI термины
+            'искусственный интеллект', 'машинное обучение', 'нейронная сеть', 'нейросеть',
+            'глубокое обучение', 'чатгпт', 'gpt', 'клод', 'гемини',
+            'языковая модель', 'генеративный ии', 'трансформер',
+            'компьютерное зрение', 'обработка естественного языка',
+            'yandex gpt', 'яндекс гпт', 'gigachat', 'гигачат',
+            'kandinsky', 'кандинский', 'rubert'
+        ]
+        
+        # Исключающие слова (новости с этими словами НЕ относятся к AI)
+        self.exclude_keywords = [
+            # Общие исключения
+            'политика', 'выборы', 'война', 'санкции', 'экономика', 'нефть', 'газ',
+            'спорт', 'футбол', 'хоккей', 'игры', 'кино', 'музыка', 'артист',
+            'politics', 'election', 'war', 'sanctions', 'economy', 'oil', 'gas',
+            'sport', 'football', 'hockey', 'movie', 'music', 'artist',
+            # Технологические, но не AI
+            'iphone', 'samsung', 'apple', 'microsoft office', 'windows', 'блокнот',
+            'xbox', 'playstation', 'steam', 'twitch', 'discord'
         ]
         
         # Thread-safe база данных
@@ -383,9 +390,22 @@ class AINewsBot:
             raise
     
     def is_ai_related(self, title: str, description: str) -> bool:
-        """Проверка, относится ли новость к AI"""
+        """Строгая проверка, относится ли новость к AI"""
         text = (title + " " + description).lower()
-        return any(keyword in text for keyword in self.ai_keywords)
+        
+        # Сначала проверяем исключающие слова
+        for exclude_word in self.exclude_keywords:
+            if exclude_word.lower() in text:
+                return False
+        
+        # Затем ищем AI ключевые слова
+        ai_matches = 0
+        for keyword in self.ai_keywords:
+            if keyword.lower() in text:
+                ai_matches += 1
+                
+        # Требуем минимум 1 совпадение для AI
+        return ai_matches >= 1
     
     def is_already_published(self, link: str) -> bool:
         """Thread-safe проверка, была ли новость уже опубликована"""
@@ -426,7 +446,7 @@ class AINewsBot:
     
     def is_russian_source(self, source_name: str) -> bool:
         """Проверка, является ли источник российским"""
-        russian_sources = ['Хабр AI', 'Хабр ML', 'Хабр DataScience', 'CNews', '3DNews', 'Tproger', 'Комсомольская правда Техно', 'Российская газета Технологии']
+        russian_sources = ['Хабр AI', 'Хабр ML', 'Хабр DataScience', 'CNews', '3DNews', 'Tproger']
         return source_name in russian_sources
     
     async def translate_text(self, text: str, quality: str = "medium", language: str = "en") -> str:
@@ -581,7 +601,14 @@ class AINewsBot:
                     continue
                 
                 source_news_count = 0
+                max_news_per_source = 5  # Максимум 5 новостей с одного источника
+                
                 for entry in entries:
+                    # Останавливаемся если достигли лимита для источника
+                    if source_news_count >= max_news_per_source:
+                        logger.info(f"🔒 Лимит для {source_name} достигнут ({max_news_per_source} новостей)")
+                        break
+                        
                     try:
                         # Парсинг даты публикации
                         published = datetime.now()
@@ -597,7 +624,7 @@ class AINewsBot:
                             source=source_name
                         )
                         
-                        # Фильтрация по AI тематике
+                        # Строгая фильтрация по AI тематике
                         if self.is_ai_related(news.title, news.description):
                             # Проверка на дубликаты
                             if not self.is_already_published(news.link):
@@ -605,6 +632,7 @@ class AINewsBot:
                                 if published > datetime.now() - timedelta(hours=24):
                                     all_news.append(news)
                                     source_news_count += 1
+                                    logger.info(f"✅ AI новость #{source_news_count}: {news.title[:50]}...")
                     
                     except Exception as e:
                         logger.error(f"Ошибка при обработке новости из {source_name}: {e}")
