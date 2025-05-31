@@ -253,8 +253,20 @@ class AINewsBot:
         self.max_news_per_cycle = int(os.getenv('MAX_NEWS_PER_CYCLE', '10'))
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         
-        # Путь к базе данных (для постоянного хранения на сервере)
-        self.db_path = os.getenv('DATABASE_PATH', 'ai_news.db')
+        # Умный путь к базе данных
+        db_path_env = os.getenv('DATABASE_PATH', 'ai_news.db')
+        
+        # Проверяем, работаем ли на Render (или другом облачном сервере)
+        if os.path.exists('/opt/render') or os.getenv('RENDER'):
+            # На Render используем абсолютный путь для постоянного хранения
+            self.db_path = '/opt/render/project/ai_news.db'
+        elif os.path.exists('/app'):  # Heroku
+            self.db_path = '/app/ai_news.db'
+        else:
+            # Локальная разработка
+            self.db_path = db_path_env
+        
+        logger.info(f"📁 Путь к базе данных: {self.db_path}")
         
         if not self.bot_token or not self.channel_id:
             raise ValueError("Необходимо установить TELEGRAM_BOT_TOKEN и TELEGRAM_CHANNEL_ID")
@@ -276,20 +288,23 @@ class AINewsBot:
         else:
             logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется Google Translator")
         
-        # RSS источники AI новостей (убираем источники с низким качеством фильтрации)
+        # RSS источники AI новостей (обновлено после тестирования)
         self.rss_sources = {
-            # Английские источники (проверенные)
+            # Английские источники (проверенные и работающие)
             'AI News': 'https://www.artificialintelligence-news.com/feed/',
             'MIT Technology Review': 'https://www.technologyreview.com/feed/',
-            'The Verge AI': 'https://www.theverge.com/ai-artificial-intelligence/rss/index.xml',
             'TechCrunch AI': 'https://techcrunch.com/category/artificial-intelligence/feed/',
-            'VentureBeat AI': 'https://venturebeat.com/ai/feed/',
+            'TechCrunch Main': 'https://techcrunch.com/feed/',  # Новый: много свежих новостей
             'Ars Technica': 'https://feeds.arstechnica.com/arstechnica/technology-lab',
+            'WIRED AI': 'https://www.wired.com/feed/tag/ai/latest/rss',  # Новый: специализированный AI
+            'IEEE Spectrum': 'https://spectrum.ieee.org/rss/fulltext',  # Новый: техническая экспертиза
+            'Analytics India': 'https://analyticsindiamag.com/feed/',  # Новый: AI аналитика
             
-            # Российские источники (только специализированные разделы)
+            # Российские источники (работающие)
             'Хабр AI': 'https://habr.com/ru/rss/hub/artificial_intelligence/',
             'Хабр ML': 'https://habr.com/ru/rss/hub/machine_learning/',
             'Хабр DataScience': 'https://habr.com/ru/rss/hub/data_mining/',
+            'Хакер': 'https://xakep.ru/feed/',  # Новый: кибербезопасность и технологии
             'CNews AI': 'https://www.cnews.ru/inc/rss/news.xml',
             '3DNews': 'https://3dnews.ru/news/rss/',
             'Tproger': 'https://tproger.ru/feed/',
@@ -302,7 +317,11 @@ class AINewsBot:
             'chatgpt', 'gpt', 'openai', 'claude', 'anthropic', 'gemini', 'bard',
             'llm', 'large language model', 'generative ai', 'transformer',
             'computer vision', 'nlp', 'natural language processing',
-            'tensorflow', 'pytorch', 'hugging face',
+            'tensorflow', 'pytorch', 'hugging face', 'algorithm',
+            
+            # Технические AI термины  
+            'robotics', 'automation', 'data science', 'big data',
+            'cybersecurity ai', 'ai security', 'ai ethics',
             
             # Русские AI термины
             'искусственный интеллект', 'машинное обучение', 'нейронная сеть', 'нейросеть',
@@ -310,7 +329,9 @@ class AINewsBot:
             'языковая модель', 'генеративный ии', 'трансформер',
             'компьютерное зрение', 'обработка естественного языка',
             'yandex gpt', 'яндекс гпт', 'gigachat', 'гигачат',
-            'kandinsky', 'кандинский', 'rubert'
+            'kandinsky', 'кандинский', 'rubert', 'алгоритм',
+            'роботика', 'автоматизация', 'анализ данных', 'большие данные',
+            'кибербезопасность ии', 'этика ии'
         ]
         
         # Исключающие слова (новости с этими словами НЕ относятся к AI)
@@ -332,36 +353,85 @@ class AINewsBot:
         self.init_database()
     
     def init_database(self):
-        """Инициализация базы данных"""
+        """Инициализация базы данных с улучшенной диагностикой"""
         logger.info(f"🗄️ Инициализация базы данных: {self.db_path}")
         
         # Создаем директорию если нужно
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+                logger.info(f"📂 Создана директория: {db_dir}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка создания директории {db_dir}: {e}")
+        
+        # Проверяем права на запись
+        try:
+            test_file = os.path.join(db_dir if db_dir else '.', 'test_write.tmp')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            logger.info("✅ Права на запись в директорию БД подтверждены")
+        except Exception as e:
+            logger.warning(f"⚠️ Проблема с правами записи: {e}")
         
         with self._db_lock:
-            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            
-            # Создание таблицы
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS published_news (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    link TEXT UNIQUE NOT NULL,
-                    title TEXT,
-                    source TEXT,
-                    published_date DATETIME,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Создание индекса для быстрого поиска
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_link ON published_news(link)")
-            self.conn.commit()
-            
-            # Логирование статистики
-            count = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
-            logger.info(f"📊 База данных готова. Уже сохранено {count} новостей")
+            try:
+                self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                
+                # Проверяем существование колонки status и добавляем если нужно
+                cursor = self.conn.execute("PRAGMA table_info(published_news)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'status' not in columns:
+                    logger.info("🔄 Миграция БД: добавляем колонку 'status'")
+                    self.conn.execute("ALTER TABLE published_news ADD COLUMN status TEXT DEFAULT 'published'")
+                    # Все существующие записи помечаем как опубликованные
+                    self.conn.execute("UPDATE published_news SET status = 'published' WHERE status IS NULL")
+                    self.conn.commit()
+                    logger.info("✅ Миграция завершена")
+                
+                # Создание таблицы с дополнительными полями (если ее нет)
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS published_news (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        link TEXT UNIQUE NOT NULL,
+                        title TEXT,
+                        source TEXT,
+                        published_date DATETIME,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT DEFAULT 'reserved'
+                    )
+                """)
+                
+                # Создание индексов для быстрого поиска
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_link ON published_news(link)")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON published_news(status)")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON published_news(created_at)")
+                
+                self.conn.commit()
+                
+                # Логирование статистики
+                count = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
+                published_count = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'published'").fetchone()[0]
+                reserved_count = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'reserved'").fetchone()[0]
+                
+                logger.info(f"📊 База данных готова. Всего: {count} | Опубликовано: {published_count} | Зарезервировано: {reserved_count}")
+                
+                # Очищаем старые зарезервированные записи (старше 1 часа)
+                old_reserved = datetime.now() - timedelta(hours=1)
+                deleted = self.conn.execute(
+                    "DELETE FROM published_news WHERE status = 'reserved' AND created_at < ?", 
+                    (old_reserved,)
+                ).rowcount
+                
+                if deleted > 0:
+                    self.conn.commit()
+                    logger.info(f"🧹 Очищено {deleted} старых зарезервированных записей")
+                    
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка инициализации БД: {e}")
+                raise
     
     @retry_with_backoff(max_attempts=3, base_delay=2.0)
     async def fetch_rss_feed(self, url: str) -> List[Dict]:
@@ -407,31 +477,114 @@ class AINewsBot:
         # Требуем минимум 1 совпадение для AI
         return ai_matches >= 1
     
-    def is_already_published(self, link: str) -> bool:
-        """Thread-safe проверка, была ли новость уже опубликована"""
+    def is_already_published(self, link: str, title: str = "") -> bool:
+        """Расширенная проверка дубликатов: по ссылке и похожему заголовку"""
         with self._db_lock:
+            # Проверка 1: Точное совпадение ссылки (опубликованные или зарезервированные)
             cursor = self.conn.execute(
-                "SELECT 1 FROM published_news WHERE link = ?", (link,)
+                "SELECT status FROM published_news WHERE link = ?", (link,)
             )
-            result = cursor.fetchone() is not None
-            if result:
-                logger.info(f"🔄 Дубликат найден, пропускаем: {link[:50]}...")
-            else:
-                logger.info(f"✅ Новая новость: {link[:50]}...")
-            return result
+            result = cursor.fetchone()
+            if result is not None:
+                status = result[0]
+                logger.info(f"🔄 Дубликат найден (статус: {status}): {link[:50]}...")
+                return True
+            
+            # Проверка 2: Похожий заголовок (если указан)
+            if title and len(title) > 20:
+                # Упрощаем заголовок для сравнения
+                clean_title = self._clean_title_for_comparison(title)
+                
+                cursor = self.conn.execute(
+                    "SELECT title, status FROM published_news WHERE created_at > datetime('now', '-7 days')"
+                )
+                existing_titles = cursor.fetchall()
+                
+                for (existing_title, status) in existing_titles:
+                    if existing_title:
+                        clean_existing = self._clean_title_for_comparison(existing_title)
+                        # Проверяем схожесть (>80% совпадение)
+                        if self._calculate_similarity(clean_title, clean_existing) > 0.8:
+                            logger.info(f"🔄 Дубликат по заголовку (статус: {status}): {title[:50]}... ≈ {existing_title[:50]}...")
+                            return True
+            
+            logger.info(f"✅ Новая новость: {link[:50]}...")
+            return False
+    
+    def _clean_title_for_comparison(self, title: str) -> str:
+        """Очистка заголовка для сравнения"""
+        import re
+        # Убираем специальные символы, приводим к нижнему регистру
+        cleaned = re.sub(r'[^\w\s]', '', title.lower())
+        # Убираем лишние пробелы
+        cleaned = ' '.join(cleaned.split())
+        return cleaned
+    
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """Вычисление схожести текстов (упрощенный алгоритм)"""
+        if not text1 or not text2:
+            return 0.0
+        
+        words1 = set(text1.split())
+        words2 = set(text2.split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0.0
     
     def mark_as_published(self, news: NewsItem):
-        """Thread-safe отметка новости как опубликованной"""
+        """Обновление статуса новости на 'published'"""
         with self._db_lock:
             try:
-                self.conn.execute(
-                    "INSERT OR IGNORE INTO published_news (link, title, source, published_date) VALUES (?, ?, ?, ?)",
-                    (news.link, news.title, news.source, news.published)
+                # Обновляем статус с reserved на published
+                cursor = self.conn.execute(
+                    "UPDATE published_news SET status = 'published' WHERE link = ?",
+                    (news.link,)
                 )
+                
+                if cursor.rowcount == 0:
+                    # Если записи нет, создаем новую (резервный вариант)
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO published_news (link, title, source, published_date, status) VALUES (?, ?, ?, ?, 'published')",
+                        (news.link, news.title, news.source, news.published)
+                    )
+                
                 self.conn.commit()
-                logger.info(f"💾 Сохранено в БД: {news.title[:50]}...")
+                logger.info(f"📝 Статус обновлен на 'published': {news.title[:50]}...")
             except Exception as e:
-                logger.error(f"Ошибка сохранения в БД: {e}")
+                logger.error(f"❌ Ошибка обновления статуса в БД: {e}")
+    
+    def reserve_news_for_processing(self, news_list: List[NewsItem]) -> List[NewsItem]:
+        """Резервирование новостей для обработки (предотвращение дубликатов)"""
+        reserved_news = []
+        
+        with self._db_lock:
+            for news in news_list:
+                try:
+                    # Пытаемся зарезервировать новость
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO published_news (link, title, source, published_date, status) VALUES (?, ?, ?, ?, 'reserved')",
+                        (news.link, news.title, news.source, news.published)
+                    )
+                    
+                    # Проверяем, была ли вставка успешной
+                    if self.conn.rowcount > 0:
+                        reserved_news.append(news)
+                        logger.info(f"🔒 Зарезервировано: {news.title[:50]}...")
+                    else:
+                        logger.info(f"🔄 Уже существует: {news.title[:50]}...")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Ошибка резервирования новости: {e}")
+            
+            self.conn.commit()
+        
+        logger.info(f"✅ Зарезервировано {len(reserved_news)} из {len(news_list)} новостей")
+        return reserved_news
     
     def detect_language(self, text: str) -> str:
         """Определение языка текста (ru или en)"""
@@ -446,7 +599,7 @@ class AINewsBot:
     
     def is_russian_source(self, source_name: str) -> bool:
         """Проверка, является ли источник российским"""
-        russian_sources = ['Хабр AI', 'Хабр ML', 'Хабр DataScience', 'CNews', '3DNews', 'Tproger']
+        russian_sources = ['Хабр AI', 'Хабр ML', 'Хабр DataScience', 'Хакер', 'CNews AI', '3DNews', 'Tproger']
         return source_name in russian_sources
     
     async def translate_text(self, text: str, quality: str = "medium", language: str = "en") -> str:
@@ -627,7 +780,7 @@ class AINewsBot:
                         # Строгая фильтрация по AI тематике
                         if self.is_ai_related(news.title, news.description):
                             # Проверка на дубликаты
-                            if not self.is_already_published(news.link):
+                            if not self.is_already_published(news.link, news.title):
                                 # Проверка актуальности (не старше 24 часов)
                                 if published > datetime.now() - timedelta(hours=24):
                                     all_news.append(news)
@@ -784,26 +937,63 @@ class AINewsBot:
             logger.error(f"Ошибка отправки алерта админу: {e}")
     
     def cleanup_old_records(self):
-        """Очистка старых записей из базы данных"""
+        """Умная очистка старых записей из базы данных"""
         with self._db_lock:
-            cutoff_date = datetime.now() - timedelta(days=7)
-            self.conn.execute(
+            # Очищаем записи старше 30 дней
+            cutoff_date = datetime.now() - timedelta(days=30)
+            
+            # Подсчитываем количество записей до очистки
+            total_before = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
+            
+            # Удаляем старые записи
+            cursor = self.conn.execute(
                 "DELETE FROM published_news WHERE created_at < ?",
                 (cutoff_date,)
             )
+            deleted_count = cursor.rowcount
+            
+            # Оптимизируем базу данных
+            self.conn.execute("VACUUM")
             self.conn.commit()
-            logger.info("Очистка старых записей завершена")
+            
+            total_after = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
+            
+            if deleted_count > 0:
+                logger.info(f"🧹 Очистка БД: удалено {deleted_count} старых записей. Осталось: {total_after}")
+            else:
+                logger.info(f"📊 БД актуальна: {total_after} записей, очистка не требуется")
+    
+    def get_duplicate_stats(self) -> dict:
+        """Статистика по дубликатам за последнюю неделю"""
+        with self._db_lock:
+            # Подсчитываем записи за неделю
+            week_ago = datetime.now() - timedelta(days=7)
+            
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM published_news WHERE created_at > ?",
+                (week_ago,)
+            )
+            week_count = cursor.fetchone()[0]
+            
+            # Общее количество записей
+            total_count = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
+            
+            return {
+                'total_saved': total_count,
+                'last_week': week_count,
+                'estimated_duplicates_blocked': max(0, week_count * 2)  # Приблизительная оценка
+            }
     
     def get_statistics(self) -> Dict:
         """Получение статистики работы бота"""
         with self._db_lock:
             cursor = self.conn.execute(
-                "SELECT COUNT(*) FROM published_news WHERE created_at > ?",
+                "SELECT COUNT(*) FROM published_news WHERE status = 'published' AND created_at > ?",
                 (datetime.now() - timedelta(hours=24),)
             )
             last_24h = cursor.fetchone()[0]
             
-            cursor = self.conn.execute("SELECT COUNT(*) FROM published_news")
+            cursor = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'published'")
             total = cursor.fetchone()[0]
         
         remaining_budget = self.cost_tracker.get_remaining_budget()
@@ -834,9 +1024,17 @@ class AINewsBot:
                 logger.info("❌ Новые новости не найдены")
                 return
             
-            # Создание пересказов
-            logger.info("🤖 Создаем пересказы новостей...")
-            translated_news = await self.translate_news(raw_news)
+            # НОВОЕ: Резервирование новостей перед обработкой
+            logger.info("🔒 Резервируем новости для обработки...")
+            reserved_news = self.reserve_news_for_processing(raw_news)
+            
+            if not reserved_news:
+                logger.info("❌ Все новости уже зарезервированы или опубликованы")
+                return
+            
+            # Создание пересказов только для зарезервированных новостей
+            logger.info(f"🤖 Создаем пересказы для {len(reserved_news)} зарезервированных новостей...")
+            translated_news = await self.translate_news(reserved_news)
             
             # Публикация
             logger.info(f"📢 Публикуем до {self.max_news_per_cycle} новостей...")
@@ -852,7 +1050,9 @@ class AINewsBot:
             if self.admin_telegram_id and published_count > 0:
                 await self._send_admin_alert(
                     f"📊 Цикл завершен\n"
-                    f"• Опубликовано: {published_count} новостей\n"
+                    f"• Найдено новостей: {len(raw_news)}\n"
+                    f"• Зарезервировано: {len(reserved_news)}\n"
+                    f"• Опубликовано: {published_count}\n"
                     f"• Время: {cycle_duration:.1f}с\n"
                     f"• Остаток бюджета: ${new_stats['remaining_budget']:.2f}"
                 )
@@ -866,9 +1066,55 @@ class AINewsBot:
             
             raise
     
+    def database_diagnostics(self) -> Dict:
+        """Диагностика состояния базы данных"""
+        with self._db_lock:
+            # Проверяем существование файла БД
+            db_exists = os.path.exists(self.db_path)
+            db_size = os.path.getsize(self.db_path) if db_exists else 0
+            
+            # Статистика по статусам
+            total_records = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
+            published_count = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'published'").fetchone()[0]
+            reserved_count = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'reserved'").fetchone()[0]
+            
+            # Последние записи
+            cursor = self.conn.execute(
+                "SELECT link, title, status, created_at FROM published_news ORDER BY created_at DESC LIMIT 5"
+            )
+            recent_records = cursor.fetchall()
+            
+            # Записи за последние 24 часа
+            day_ago = datetime.now() - timedelta(hours=24)
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM published_news WHERE created_at > ?", (day_ago,)
+            )
+            recent_count = cursor.fetchone()[0]
+            
+            return {
+                'db_path': self.db_path,
+                'db_exists': db_exists,
+                'db_size_bytes': db_size,
+                'total_records': total_records,
+                'published_count': published_count,
+                'reserved_count': reserved_count,
+                'recent_24h': recent_count,
+                'recent_records': recent_records
+            }
+
     async def start_bot(self):
         """Запуск бота с периодическими проверками и мониторингом"""
         logger.info("🚀 Запуск AI News Bot...")
+        
+        # Диагностика базы данных при запуске
+        db_diagnostics = self.database_diagnostics()
+        logger.info(f"🔍 Диагностика БД:")
+        logger.info(f"  • Путь: {db_diagnostics['db_path']}")
+        logger.info(f"  • Размер: {db_diagnostics['db_size_bytes']} байт")
+        logger.info(f"  • Всего записей: {db_diagnostics['total_records']}")
+        logger.info(f"  • Опубликовано: {db_diagnostics['published_count']}")
+        logger.info(f"  • Зарезервировано: {db_diagnostics['reserved_count']}")
+        logger.info(f"  • За 24 часа: {db_diagnostics['recent_24h']}")
         
         # Добавляем мониторинг если файл существует
         try:
@@ -878,14 +1124,22 @@ class AINewsBot:
         except ImportError:
             logger.warning("⚠️ Модуль мониторинга не найден")
         
-        # Отправляем уведомление о запуске админу
+        # Отправляем уведомление о запуске админу с диагностикой
         if self.admin_telegram_id:
-            await self._send_admin_alert(
-                f"🚀 AI News Bot запущен!\n"
+            startup_message = (
+                f"🚀 AI News Bot запущен!\n\n"
+                f"<b>Конфигурация:</b>\n"
                 f"• Модель: {self.ai_model}\n"
                 f"• Бюджет: ${self.max_monthly_cost}\n"
-                f"• Макс новостей: {self.max_news_per_cycle}"
+                f"• Макс новостей: {self.max_news_per_cycle}\n\n"
+                f"<b>База данных:</b>\n"
+                f"• Путь: {db_diagnostics['db_path']}\n"
+                f"• Размер: {db_diagnostics['db_size_bytes']} байт\n"
+                f"• Опубликовано: {db_diagnostics['published_count']}\n"
+                f"• Зарезервировано: {db_diagnostics['reserved_count']}\n"
+                f"• За 24 часа: {db_diagnostics['recent_24h']}"
             )
+            await self._send_admin_alert(startup_message)
         
         while True:
             try:

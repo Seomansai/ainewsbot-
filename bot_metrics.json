@@ -1,0 +1,10 @@
+{
+  "cycles_completed": 2,
+  "news_processed": 0,
+  "news_published": 0,
+  "errors_count": 0,
+  "api_requests": 0,
+  "api_costs": 0.0,
+  "last_cycle_duration": 11.67983102798462,
+  "uptime_start": "2025-05-31T18:22:37.153196"
+}
