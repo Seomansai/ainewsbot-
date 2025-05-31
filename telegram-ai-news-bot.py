@@ -121,7 +121,17 @@ class CostTracker:
             
             self._save_costs()
             
-        logger.info(f"💰 {model}: ${actual_cost:.4f} (месяц: ${self.costs['monthly_costs'][month_key]:.2f})")
+            # Проверка лимитов и возврат алертов
+            new_total = self.costs["monthly_costs"][month_key]
+            
+        logger.info(f"💰 {model}: ${actual_cost:.4f} (месяц: ${new_total:.2f})")
+        
+        # Возвращаем информацию для алертов
+        return {
+            'cost': actual_cost,
+            'monthly_total': new_total,
+            'budget_percentage': (new_total / self.max_monthly_budget) * 100
+        }
     
     def get_remaining_budget(self) -> float:
         """Получение остатка бюджета"""
@@ -142,6 +152,35 @@ class CostTracker:
             return "openai/gpt-3.5-turbo"
         else:
             return "meta-llama/llama-3.1-8b-instruct:free"
+    
+    def check_budget_alerts(self, usage_info: dict) -> Optional[str]:
+        """Проверка необходимости алертов о бюджете"""
+        percentage = usage_info['budget_percentage']
+        monthly_total = usage_info['monthly_total']
+        
+        # Алерт при 75% бюджета
+        if 75 <= percentage < 90:
+            return f"⚠️ <b>Предупреждение о бюджете</b>\n\n" \
+                   f"Использовано: ${monthly_total:.2f} из ${self.max_monthly_budget}\n" \
+                   f"Процент: {percentage:.1f}%\n" \
+                   f"Остаток: ${self.max_monthly_budget - monthly_total:.2f}"
+        
+        # Критический алерт при 90% бюджета
+        elif 90 <= percentage < 100:
+            return f"🚨 <b>КРИТИЧЕСКОЕ предупреждение!</b>\n\n" \
+                   f"Использовано: ${monthly_total:.2f} из ${self.max_monthly_budget}\n" \
+                   f"Процент: {percentage:.1f}%\n" \
+                   f"Остаток: ${self.max_monthly_budget - monthly_total:.2f}\n" \
+                   f"⚡ Скоро переключение на бесплатную модель!"
+        
+        # Алерт при превышении лимита
+        elif percentage >= 100:
+            return f"🛑 <b>БЮДЖЕТ ПРЕВЫШЕН!</b>\n\n" \
+                   f"Использовано: ${monthly_total:.2f} из ${self.max_monthly_budget}\n" \
+                   f"Превышение: ${monthly_total - self.max_monthly_budget:.2f}\n" \
+                   f"🔄 Бот переключился на бесплатную модель"
+        
+        return None
 
 # ===== RETRY ДЕКОРАТОР =====
 def retry_with_backoff(max_attempts: int = 3, base_delay: float = 1.0):
@@ -209,7 +248,7 @@ class AINewsBot:
         self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
         
         # Новые настройки
-        self.ai_model = os.getenv('AI_MODEL', 'meta-llama/llama-3.1-8b-instruct:free')
+        self.ai_model = os.getenv('AI_MODEL', 'anthropic/claude-3.5-sonnet')
         self.max_monthly_cost = float(os.getenv('MAX_MONTHLY_COST', '5.0'))
         self.max_news_per_cycle = int(os.getenv('MAX_NEWS_PER_CYCLE', '10'))
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
@@ -324,11 +363,21 @@ class AINewsBot:
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as response:
-                    if response.status != 200:
+                    # Принимаем все успешные статусы 2xx (200, 201, 202, etc.)
+                    if not (200 <= response.status < 300):
                         raise aiohttp.ClientError(f"HTTP {response.status}")
+                    
                     content = await response.text()
                     feed = feedparser.parse(content)
-                    return feed.entries
+                    
+                    # Проверка на валидность RSS фида
+                    if hasattr(feed, 'entries') and len(feed.entries) > 0:
+                        logger.info(f"✅ RSS фид получен: {len(feed.entries)} записей (HTTP {response.status})")
+                        return feed.entries
+                    else:
+                        logger.warning(f"⚠️ RSS фид пуст или невалиден: {url}")
+                        return []
+                        
         except Exception as e:
             logger.error(f"Ошибка при получении RSS фида {url}: {e}")
             raise
@@ -412,11 +461,17 @@ class AINewsBot:
                 
                 # Запись расходов
                 if hasattr(response, 'usage') and response.usage:
-                    self.cost_tracker.record_usage(
+                    usage_info = self.cost_tracker.record_usage(
                         model, 
                         response.usage.prompt_tokens,
                         response.usage.completion_tokens
                     )
+                    
+                    # Проверка на алерты о бюджете
+                    if usage_info and self.admin_telegram_id:
+                        alert_message = self.cost_tracker.check_budget_alerts(usage_info)
+                        if alert_message:
+                            await self._send_admin_alert(alert_message)
                 
                 return response.choices[0].message.content.strip()
             else:
@@ -512,37 +567,63 @@ class AINewsBot:
     async def parse_news_sources(self) -> List[NewsItem]:
         """Парсинг всех источников новостей"""
         all_news = []
+        successful_sources = 0
+        failed_sources = []
         
         for source_name, rss_url in self.rss_sources.items():
-            logger.info(f"Парсинг источника: {source_name}")
-            entries = await self.fetch_rss_feed(rss_url)
-            
-            for entry in entries:
-                try:
-                    # Парсинг даты публикации
-                    published = datetime.now()
-                    if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                        published = datetime(*entry.published_parsed[:6])
-                    
-                    # Создание объекта новости
-                    news = NewsItem(
-                        title=entry.get('title', ''),
-                        description=entry.get('summary', ''),
-                        link=entry.get('link', ''),
-                        published=published,
-                        source=source_name
-                    )
-                    
-                    # Фильтрация по AI тематике
-                    if self.is_ai_related(news.title, news.description):
-                        # Проверка на дубликаты
-                        if not self.is_already_published(news.link):
-                            # Проверка актуальности (не старше 24 часов)
-                            if published > datetime.now() - timedelta(hours=24):
-                                all_news.append(news)
+            try:
+                logger.info(f"🔍 Парсинг источника: {source_name}")
+                entries = await self.fetch_rss_feed(rss_url)
                 
-                except Exception as e:
-                    logger.error(f"Ошибка при обработке новости из {source_name}: {e}")
+                if not entries:
+                    logger.warning(f"⚠️ Источник {source_name} вернул пустой результат")
+                    failed_sources.append(source_name)
+                    continue
+                
+                source_news_count = 0
+                for entry in entries:
+                    try:
+                        # Парсинг даты публикации
+                        published = datetime.now()
+                        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                            published = datetime(*entry.published_parsed[:6])
+                        
+                        # Создание объекта новости
+                        news = NewsItem(
+                            title=entry.get('title', ''),
+                            description=entry.get('summary', ''),
+                            link=entry.get('link', ''),
+                            published=published,
+                            source=source_name
+                        )
+                        
+                        # Фильтрация по AI тематике
+                        if self.is_ai_related(news.title, news.description):
+                            # Проверка на дубликаты
+                            if not self.is_already_published(news.link):
+                                # Проверка актуальности (не старше 24 часов)
+                                if published > datetime.now() - timedelta(hours=24):
+                                    all_news.append(news)
+                                    source_news_count += 1
+                    
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке новости из {source_name}: {e}")
+                
+                if source_news_count > 0:
+                    logger.info(f"✅ {source_name}: найдено {source_news_count} AI новостей")
+                    successful_sources += 1
+                else:
+                    logger.info(f"ℹ️ {source_name}: AI новости не найдены")
+                    successful_sources += 1  # Источник работает, просто нет подходящих новостей
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка источника {source_name}: {e}")
+                failed_sources.append(source_name)
+        
+        # Статистика парсинга
+        logger.info(f"📊 Парсинг завершен: {successful_sources}/{len(self.rss_sources)} источников успешно")
+        if failed_sources:
+            logger.warning(f"⚠️ Недоступные источники: {', '.join(failed_sources)}")
         
         return all_news
     
