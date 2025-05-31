@@ -68,24 +68,30 @@ class AINewsBot:
     
     def __init__(self):
         # Конфигурация из переменных окружения
+        load_dotenv()
+        
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
-        self.openrouter_key = os.getenv('OPENROUTER_API_KEY')
+        self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+        
+        # Путь к базе данных (для постоянного хранения на сервере)
+        self.db_path = os.getenv('DATABASE_PATH', 'ai_news.db')
         
         if not self.bot_token or not self.channel_id:
             raise ValueError("Необходимо установить TELEGRAM_BOT_TOKEN и TELEGRAM_CHANNEL_ID")
         
         self.bot = Bot(token=self.bot_token)
         
-        # Инициализация OpenRouter API
-        if self.openrouter_key:
+        # Инициализация OpenRouter клиента
+        self.client = None
+        if self.openrouter_api_key:
             self.client = OpenAI(
-                api_key=self.openrouter_key,
+                api_key=self.openrouter_api_key,
                 base_url="https://openrouter.ai/api/v1"
             )
+            logger.info("✅ OpenRouter клиент инициализирован для создания пересказов")
         else:
-            logger.warning("OPENROUTER_API_KEY не установлен, используется fallback переводчик")
-            self.client = None
+            logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется Google Translator")
         
         # RSS источники AI новостей
         self.rss_sources = {
@@ -111,19 +117,30 @@ class AINewsBot:
         self.init_database()
     
     def init_database(self):
-        """Инициализация SQLite базы данных"""
-        self.conn = sqlite3.connect('ai_news.db', check_same_thread=False)
-        self.conn.execute('''
+        """Инициализация базы данных"""
+        logger.info(f"🗄️ Инициализация базы данных: {self.db_path}")
+        
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        
+        # Создание таблицы
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS published_news (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 link TEXT UNIQUE NOT NULL,
-                title TEXT NOT NULL,
-                source TEXT NOT NULL,
-                published_date DATETIME NOT NULL,
+                title TEXT,
+                source TEXT,
+                published_date DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
+        
+        # Создание индекса для быстрого поиска
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_link ON published_news(link)")
         self.conn.commit()
+        
+        # Логирование статистики
+        count = self.conn.execute("SELECT COUNT(*) FROM published_news").fetchone()[0]
+        logger.info(f"📊 База данных готова. Уже сохранено {count} новостей")
     
     async def fetch_rss_feed(self, url: str) -> List[Dict]:
         """Асинхронное получение RSS фида"""
@@ -147,7 +164,12 @@ class AINewsBot:
         cursor = self.conn.execute(
             "SELECT 1 FROM published_news WHERE link = ?", (link,)
         )
-        return cursor.fetchone() is not None
+        result = cursor.fetchone() is not None
+        if result:
+            logger.info(f"🔄 Дубликат найден, пропускаем: {link[:50]}...")
+        else:
+            logger.info(f"✅ Новая новость: {link[:50]}...")
+        return result
     
     def mark_as_published(self, news: NewsItem):
         """Отметить новость как опубликованную"""
@@ -156,6 +178,7 @@ class AINewsBot:
             (news.link, news.title, news.source, news.published)
         )
         self.conn.commit()
+        logger.info(f"💾 Сохранено в БД: {news.title[:50]}...")
     
     def translate_text(self, text: str) -> str:
         """Создание краткого пересказа новости на русском языке"""
@@ -354,31 +377,36 @@ class AINewsBot:
         }
     
     async def run_news_cycle(self):
-        """Основной цикл обработки новостей"""
+        """Основной цикл парсинга и публикации новостей"""
         try:
-            logger.info("Начинаем цикл обработки новостей...")
+            # Логирование состояния базы данных
+            total_count = self.get_statistics()['total_published']
+            logger.info(f"📊 Запуск цикла парсинга. В БД уже {total_count} новостей")
             
-            # 1. Парсинг новостей
-            news_list = await self.parse_news_sources()
-            logger.info(f"Найдено {len(news_list)} новых AI новостей")
+            # Парсинг новостей
+            logger.info("🔍 Начинаем парсинг источников...")
+            raw_news = await self.parse_news_sources()
+            logger.info(f"📰 Найдено {len(raw_news)} потенциальных новостей")
             
-            if not news_list:
-                logger.info("Новых новостей не найдено")
+            if not raw_news:
+                logger.info("❌ Новые новости не найдены")
                 return
             
-            # 2. Создание пересказов новостей
-            summarized_news = await self.translate_news(news_list)
+            # Создание пересказов
+            logger.info("🤖 Создаем пересказы новостей...")
+            translated_news = await self.translate_news(raw_news)
             
-            # 3. Публикация новостей
-            await self.publish_news(summarized_news)
+            # Публикация
+            logger.info(f"📢 Публикуем {len(translated_news)} новостей...")
+            await self.publish_news(translated_news)
             
-            # 4. Очистка старых записей
-            self.cleanup_old_records()
-            
-            logger.info(f"Цикл завершен. Опубликовано {len(summarized_news)} новостей")
+            # Финальная статистика
+            new_total = self.get_statistics()['total_published']
+            published_count = new_total - total_count
+            logger.info(f"✅ Цикл завершен. Опубликовано: {published_count} новых новостей")
             
         except Exception as e:
-            logger.error(f"Ошибка в основном цикле: {e}")
+            logger.error(f"❌ Ошибка в основном цикле: {e}")
     
     async def start_bot(self):
         """Запуск бота с периодическими проверками"""
