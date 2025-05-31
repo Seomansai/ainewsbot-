@@ -379,19 +379,7 @@ class AINewsBot:
             try:
                 self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
                 
-                # Проверяем существование колонки status и добавляем если нужно
-                cursor = self.conn.execute("PRAGMA table_info(published_news)")
-                columns = [col[1] for col in cursor.fetchall()]
-                
-                if 'status' not in columns:
-                    logger.info("🔄 Миграция БД: добавляем колонку 'status'")
-                    self.conn.execute("ALTER TABLE published_news ADD COLUMN status TEXT DEFAULT 'published'")
-                    # Все существующие записи помечаем как опубликованные
-                    self.conn.execute("UPDATE published_news SET status = 'published' WHERE status IS NULL")
-                    self.conn.commit()
-                    logger.info("✅ Миграция завершена")
-                
-                # Создание таблицы с дополнительными полями (если ее нет)
+                # СНАЧАЛА создаем таблицу если её нет
                 self.conn.execute("""
                     CREATE TABLE IF NOT EXISTS published_news (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -403,6 +391,18 @@ class AINewsBot:
                         status TEXT DEFAULT 'reserved'
                     )
                 """)
+                
+                # ПОТОМ проверяем существование колонки status и добавляем если нужно
+                cursor = self.conn.execute("PRAGMA table_info(published_news)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'status' not in columns:
+                    logger.info("🔄 Миграция БД: добавляем колонку 'status'")
+                    self.conn.execute("ALTER TABLE published_news ADD COLUMN status TEXT DEFAULT 'published'")
+                    # Все существующие записи помечаем как опубликованные
+                    self.conn.execute("UPDATE published_news SET status = 'published' WHERE status IS NULL")
+                    self.conn.commit()
+                    logger.info("✅ Миграция завершена")
                 
                 # Создание индексов для быстрого поиска
                 self.conn.execute("CREATE INDEX IF NOT EXISTS idx_link ON published_news(link)")
