@@ -3,7 +3,6 @@
 
 import asyncio
 import sqlite3
-import feedparser
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
@@ -246,6 +245,7 @@ class AINewsBot:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
         self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+        self.newsapi_key = os.getenv('NEWSAPI_KEY')
         
         # Основные настройки
         self.ai_model = os.getenv('AI_MODEL', 'anthropic/claude-3.5-sonnet')
@@ -283,107 +283,51 @@ class AINewsBot:
                 api_key=self.openrouter_api_key,
                 base_url="https://openrouter.ai/api/v1"
             )
-            logger.info("✅ Claude 3.5 Sonnet инициализирован для RSS обработки")
+            logger.info("✅ Claude 3.5 Sonnet инициализирован для News API обработки")
             logger.info(f"💰 Остаток бюджета: ${self.cost_tracker.get_remaining_budget():.2f}")
         else:
             logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется упрощенный режим")
         
-        # RSS источники AI новостей (ТОЛЬКО РУССКОЯЗЫЧНЫЕ)
-        self.rss_sources = {
-            # ===== РУССКОЯЗЫЧНЫЕ ИСТОЧНИКИ AI И ТЕХНОЛОГИЙ =====
-            
-            # 🏆 Хабр - главные AI хабы
-            'Хабр AI': 'https://habr.com/ru/rss/hub/artificial_intelligence/',
-            'Хабр ML': 'https://habr.com/ru/rss/hub/machine_learning/',
-            'Хабр DataScience': 'https://habr.com/ru/rss/hub/data_mining/',
-            'Хабр Neural Networks': 'https://habr.com/ru/rss/hub/neural_networks/',
-            'Хабр Python': 'https://habr.com/ru/rss/hub/python/',
-            
-            # 🔥 Профильные tech-издания
-            'Tproger': 'https://tproger.ru/feed/',
-            'VC.ru Tech': 'https://vc.ru/feed',
-            'DTF Tech': 'https://dtf.ru/rss/all',
-            
-            # 📰 Технологические новостные порталы
-            'CNews': 'https://www.cnews.ru/inc/rss/news.xml',
-            '3DNews': 'https://3dnews.ru/news/rss/',
-            'Digit.ru': 'https://digit.ru/rss/',
-            'Hi-Tech Mail.ru': 'https://hi-tech.mail.ru/rss/',
-            
-            # 🛡️ Кибербезопасность и хакерство
-            'Xakep.ru': 'https://xakep.ru/feed/',
-            'SecurityLab': 'https://www.securitylab.ru/rss.php',
-            
-            # 🎮 Игровая индустрия и технологии
-            'StopGame Tech': 'https://stopgame.ru/rss/news.xml',
-            'Игромания Tech': 'https://www.igromania.ru/rss/news.xml',
-            
-            # 💼 Стартапы и бизнес
-            'RB.ru Tech': 'https://rb.ru/feeds/all/',
-            'Forbes Russia Tech': 'https://www.forbes.ru/rss',
-            
-            # 🔬 Научно-популярные
-            'N+1 Tech': 'https://nplus1.ru/rss',
-            'Популярная Механика': 'https://www.popmech.ru/rss/',
-        }
+        # Проверка NewsAPI ключа
+        if not self.newsapi_key:
+            raise ValueError("Необходимо установить NEWSAPI_KEY для получения новостей")
         
-        # Строгие ключевые слова для AI (только релевантные)
+        logger.info("✅ NewsAPI.org режим активирован")
+        logger.info("📈 Качественные новости вместо RSS парсинга")
+        
+        # ===== NEWS API КОНФИГУРАЦИЯ =====
+        
+        # Ключевые слова для поиска AI новостей (русские)
         self.ai_keywords = [
-            # Основные AI термины
-            'artificial intelligence', 'machine learning', 'neural network', 'deep learning',
-            'chatgpt', 'gpt', 'openai', 'claude', 'anthropic', 'gemini', 'bard',
-            'llm', 'large language model', 'generative ai', 'transformer',
-            'computer vision', 'nlp', 'natural language processing',
-            'tensorflow', 'pytorch', 'hugging face', 'algorithm',
-            
-            # Технические AI термины  
-            'robotics', 'automation', 'data science', 'big data',
-            'cybersecurity ai', 'ai security', 'ai ethics',
-            
-            # ===== РАСШИРЕННЫЕ РУССКИЕ AI ТЕРМИНЫ =====
-            # Основные
-            'искусственный интеллект', 'машинное обучение', 'нейронная сеть', 'нейросеть',
-            'глубокое обучение', 'чатгпт', 'gpt', 'клод', 'гемини',
-            'языковая модель', 'генеративный ии', 'трансформер',
-            'компьютерное зрение', 'обработка естественного языка',
-            
-            # Российские AI платформы
-            'yandex gpt', 'яндекс гпт', 'gigachat', 'гигачат',
-            'kandinsky', 'кандинский', 'rubert', 'rudalcore',
-            'сбер ai', 'сберapi', 'salute ai',
-            
-            # Технологические
-            'алгоритм', 'роботика', 'автоматизация', 'анализ данных', 'большие данные',
-            'кибербезопасность ии', 'этика ии', 'python', 'tensorflow', 'pytorch',
-            'машинное зрение', 'распознавание речи', 'синтез речи',
-            'рекомендательная система', 'предиктивная аналитика',
-            
-            # Бизнес и стартапы
-            'стартап ai', 'ии стартап', 'tech стартап', 'финтех',
-            'edtech', 'healthtech', 'regtech', 'insurtech',
-            'цифровизация', 'диджитализация', 'цифровая трансформация',
-            
-            # Конкретные технологии
-            'блокчейн', 'криптовалюта', 'nft', 'метавселенная', 'vr', 'ar',
-            'квантовые вычисления', 'edge computing', 'iot', 'интернет вещей',
-            '5g', '6g', 'облачные вычисления', 'микросервисы',
-            
-            # Программирование и разработка
-            'фронтенд', 'бэкенд', 'fullstack', 'devops', 'mlops',
-            'api', 'sdk', 'framework', 'библиотека', 'opensource',
-            'github', 'gitlab', 'docker', 'kubernetes'
+            "искусственный интеллект",
+            "машинное обучение", 
+            "нейронная сеть",
+            "ChatGPT",
+            "нейросеть",
+            "ИИ технологии",
+            "AI разработка",
+            "глубокое обучение",
+            "Yandex GPT",
+            "GigaChat",
+            "AI стартап",
+            "робототехника",
+            "автоматизация",
+            "компьютерное зрение",
+            "обработка языка"
         ]
         
-        # Исключающие слова (новости с этими словами НЕ относятся к AI)
-        self.exclude_keywords = [
-            # Общие исключения
-            'политика', 'выборы', 'война', 'санкции', 'экономика', 'нефть', 'газ',
-            'спорт', 'футбол', 'хоккей', 'игры', 'кино', 'музыка', 'артист',
-            'politics', 'election', 'war', 'sanctions', 'economy', 'oil', 'gas',
-            'sport', 'football', 'hockey', 'movie', 'music', 'artist',
-            # Технологические, но не AI
-            'iphone', 'samsung', 'apple', 'microsoft office', 'windows', 'блокнот',
-            'xbox', 'playstation', 'steam', 'twitch', 'discord'
+        # Русские источники для NewsAPI
+        self.russian_sources = [
+            "rbc.ru",
+            "lenta.ru", 
+            "ria.ru",
+            "tass.ru",
+            "rt.com",
+            "gazeta.ru",
+            "kommersant.ru",
+            "vedomosti.ru",
+            "forbes.ru",
+            "cnews.ru"
         ]
         
         # Thread-safe база данных
@@ -474,48 +418,106 @@ class AINewsBot:
                 raise
     
     @retry_with_backoff(max_attempts=3, base_delay=2.0)
-    async def fetch_rss_feed(self, url: str) -> List[Dict]:
-        """Асинхронное получение RSS фида с retry"""
+    async def fetch_news_from_api(self, keyword: str, page_size: int = 20) -> List[Dict]:
+        """Получение новостей через NewsAPI.org"""
         try:
+            url = "https://newsapi.org/v2/everything"
+            
+            # Параметры запроса
+            params = {
+                'apiKey': self.newsapi_key,
+                'q': keyword,
+                'language': 'ru',  # Только русские новости
+                'sortBy': 'publishedAt',  # Сортировка по дате
+                'pageSize': page_size,
+                'from': (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d'),  # За последние 24 часа
+                'domains': ','.join(self.russian_sources)  # Только русские источники
+            }
+            
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as response:
-                    # Принимаем все успешные статусы 2xx (200, 201, 202, etc.)
-                    if not (200 <= response.status < 300):
-                        raise aiohttp.ClientError(f"HTTP {response.status}")
-                    
-                    content = await response.text()
-                    feed = feedparser.parse(content)
-                    
-                    # Проверка на валидность RSS фида
-                    if hasattr(feed, 'entries') and len(feed.entries) > 0:
-                        logger.info(f"✅ RSS фид получен: {len(feed.entries)} записей (HTTP {response.status})")
-                        return feed.entries
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        articles = data.get('articles', [])
+                        logger.info(f"✅ NewsAPI: найдено {len(articles)} новостей по '{keyword}'")
+                        return articles
+                    elif response.status == 429:
+                        logger.warning("⚠️ NewsAPI rate limit превышен")
+                        return []
                     else:
-                        logger.warning(f"⚠️ RSS фид пуст или невалиден: {url}")
+                        logger.error(f"❌ NewsAPI ошибка: HTTP {response.status}")
                         return []
                         
         except Exception as e:
-            logger.error(f"Ошибка при получении RSS фида {url}: {e}")
+            logger.error(f"Ошибка при получении новостей через API: {e}")
             raise
     
-    def is_ai_related(self, title: str, description: str) -> bool:
-        """Строгая проверка, относится ли новость к AI"""
-        text = (title + " " + description).lower()
+    async def parse_news_sources(self) -> List[NewsItem]:
+        """Парсинг новостей через NewsAPI вместо RSS"""
+        all_news = []
         
-        # Сначала проверяем исключающие слова
-        for exclude_word in self.exclude_keywords:
-            if exclude_word.lower() in text:
-                return False
+        # Ротация ключевых слов для максимального охвата
+        active_keywords = self.ai_keywords[:5]  # Берем первые 5 ключевых слов
         
-        # Затем ищем AI ключевые слова
-        ai_matches = 0
-        for keyword in self.ai_keywords:
-            if keyword.lower() in text:
-                ai_matches += 1
+        for keyword in active_keywords:
+            try:
+                logger.info(f"🔍 Поиск новостей по '{keyword}' через NewsAPI...")
+                articles = await self.fetch_news_from_api(keyword, page_size=10)
                 
-        # Требуем минимум 1 совпадение для AI
-        return ai_matches >= 1
+                if not articles:
+                    continue
+                
+                for article in articles:
+                    try:
+                        # Парсинг даты публикации
+                        published_str = article.get('publishedAt', '')
+                        if published_str:
+                            # Парсинг ISO формата: 2024-01-15T10:30:00Z
+                            published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                        else:
+                            published = datetime.now()
+                        
+                        # Определение источника
+                        source_name = article.get('source', {}).get('name', 'Неизвестный источник')
+                        
+                        # Создание объекта новости
+                        news = NewsItem(
+                            title=article.get('title', ''),
+                            description=article.get('description', ''),
+                            link=article.get('url', ''),
+                            published=published,
+                            source=source_name
+                        )
+                        
+                        # Проверка на дубликаты
+                        if not self.is_already_published(news.link, news.title):
+                            # Проверка актуальности (не старше 24 часов)
+                            if published > datetime.now() - timedelta(hours=24):
+                                all_news.append(news)
+                                logger.info(f"✅ AI новость: {news.title[:50]}...")
+                    
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке статьи: {e}")
+                        continue
+                
+                # Задержка между запросами (NewsAPI лимиты)
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"Ошибка при обработке ключевого слова '{keyword}': {e}")
+        
+        # Удаляем дубликаты по заголовкам
+        seen_titles = set()
+        unique_news = []
+        for news in all_news:
+            title_key = news.title.lower()[:50]  # Первые 50 символов для сравнения
+            if title_key not in seen_titles:
+                seen_titles.add(title_key)
+                unique_news.append(news)
+        
+        logger.info(f"📊 NewsAPI парсинг завершен: {len(unique_news)} уникальных новостей из {len(all_news)}")
+        return unique_news
     
     def is_already_published(self, link: str, title: str = "") -> bool:
         """Расширенная проверка дубликатов: по ссылке и похожему заголовку"""
@@ -637,28 +639,8 @@ class AINewsBot:
         else:
             return 'en'
     
-    def is_russian_source(self, source_name: str) -> bool:
-        """Проверка, является ли источник российским"""
-        russian_sources = [
-            # Хабр хабы
-            'Хабр AI', 'Хабр ML', 'Хабр DataScience', 'Хабр Neural Networks', 'Хабр Python',
-            # Tech издания
-            'Tproger', 'VC.ru Tech', 'DTF Tech',
-            # Новостные порталы
-            'CNews', '3DNews', 'Digit.ru', 'Hi-Tech Mail.ru',
-            # Кибербезопасность
-            'Xakep.ru', 'SecurityLab',
-            # Игры и технологии
-            'StopGame Tech', 'Игромания Tech',
-            # Бизнес
-            'RB.ru Tech', 'Forbes Russia Tech',
-            # Научпоп
-            'N+1 Tech', 'Популярная Механика'
-        ]
-        return source_name in russian_sources
-    
     async def translate_news(self, news_list: List[NewsItem]) -> List[NewsItem]:
-        """Обработка русскоязычных RSS новостей через Claude"""
+        """Обработка русскоязычных новостей из NewsAPI через Claude"""
         for news in news_list:
             try:
                 logger.info(f"🇷🇺 Claude обработка: {news.title[:50]}...")
@@ -931,15 +913,15 @@ class AINewsBot:
         try:
             # Логирование состояния
             stats = self.get_statistics()
-            logger.info(f"📊 Запуск цикла. БД: {stats['total_published']} новостей, Бюджет: ${stats['remaining_budget']:.2f}")
+            logger.info(f"📊 Запуск News API цикла. БД: {stats['total_published']} новостей, Бюджет: ${stats['remaining_budget']:.2f}")
             
-            # Парсинг новостей
-            logger.info("🔍 Начинаем парсинг источников...")
+            # Парсинг новостей через News API
+            logger.info("🔍 Поиск AI новостей через NewsAPI.org...")
             raw_news = await self.parse_news_sources()
-            logger.info(f"📰 Найдено {len(raw_news)} потенциальных новостей")
+            logger.info(f"📰 Найдено {len(raw_news)} новостей через News API")
             
             if not raw_news:
-                logger.info("❌ Новые новости не найдены")
+                logger.info("❌ Новые новости не найдены через News API")
                 return
             
             # НОВОЕ: Резервирование новостей перед обработкой
@@ -951,7 +933,7 @@ class AINewsBot:
                 return
             
             # Обработка через Claude (упрощенная)
-            logger.info(f"🤖 Claude обрабатывает {len(reserved_news)} RSS новостей...")
+            logger.info(f"🤖 Claude обрабатывает {len(reserved_news)} News API новостей...")
             translated_news = await self.translate_news(reserved_news)
             
             # Публикация
@@ -962,12 +944,12 @@ class AINewsBot:
             cycle_duration = time.time() - cycle_start_time
             new_stats = self.get_statistics()
             
-            logger.info(f"✅ Цикл завершен за {cycle_duration:.1f}с. Опубликовано: {published_count} новостей")
+            logger.info(f"✅ News API цикл завершен за {cycle_duration:.1f}с. Опубликовано: {published_count} новостей")
             
             # Отправляем статистику админу
             if self.admin_telegram_id and published_count > 0:
                 await self._send_admin_alert(
-                    f"📊 Claude RSS цикл завершен\n"
+                    f"📊 News API цикл завершен\n"
                     f"• Найдено новостей: {len(raw_news)}\n"
                     f"• Зарезервировано: {len(reserved_news)}\n"
                     f"• Опубликовано: {published_count}\n"
@@ -1047,7 +1029,7 @@ class AINewsBot:
             startup_message = (
                 f"🚀 AI News Bot запущен!\n\n"
                 f"<b>Конфигурация:</b>\n"
-                f"• Режим: Claude RSS обработка\n"
+                f"• Режим: NewsAPI.org + Claude\n"
                 f"• Модель: {self.ai_model}\n"
                 f"• Бюджет: ${self.max_monthly_cost}\n"
                 f"• Макс новостей: {self.max_news_per_cycle}\n\n"
@@ -1085,77 +1067,6 @@ class AINewsBot:
                 if self.admin_telegram_id:
                     await self._send_admin_alert(f"💥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
                 await asyncio.sleep(300)  # Ожидание 5 минут при ошибке
-
-    async def parse_news_sources(self) -> List[NewsItem]:
-        """Парсинг всех источников новостей"""
-        all_news = []
-        successful_sources = 0
-        failed_sources = []
-        
-        for source_name, rss_url in self.rss_sources.items():
-            try:
-                logger.info(f"🔍 Парсинг источника: {source_name}")
-                entries = await self.fetch_rss_feed(rss_url)
-                
-                if not entries:
-                    logger.warning(f"⚠️ Источник {source_name} вернул пустой результат")
-                    failed_sources.append(source_name)
-                    continue
-                
-                source_news_count = 0
-                max_news_per_source = 5  # Максимум 5 новостей с одного источника
-                
-                for entry in entries:
-                    # Останавливаемся если достигли лимита для источника
-                    if source_news_count >= max_news_per_source:
-                        logger.info(f"🔒 Лимит для {source_name} достигнут ({max_news_per_source} новостей)")
-                        break
-                        
-                    try:
-                        # Парсинг даты публикации
-                        published = datetime.now()
-                        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                            published = datetime(*entry.published_parsed[:6])
-                        
-                        # Создание объекта новости
-                        news = NewsItem(
-                            title=entry.get('title', ''),
-                            description=entry.get('summary', ''),
-                            link=entry.get('link', ''),
-                            published=published,
-                            source=source_name
-                        )
-                        
-                        # Строгая фильтрация по AI тематике
-                        if self.is_ai_related(news.title, news.description):
-                            # Проверка на дубликаты
-                            if not self.is_already_published(news.link, news.title):
-                                # Проверка актуальности (не старше 24 часов)
-                                if published > datetime.now() - timedelta(hours=24):
-                                    all_news.append(news)
-                                    source_news_count += 1
-                                    logger.info(f"✅ AI новость #{source_news_count}: {news.title[:50]}...")
-                    
-                    except Exception as e:
-                        logger.error(f"Ошибка при обработке новости из {source_name}: {e}")
-                
-                if source_news_count > 0:
-                    logger.info(f"✅ {source_name}: найдено {source_news_count} AI новостей")
-                    successful_sources += 1
-                else:
-                    logger.info(f"ℹ️ {source_name}: AI новости не найдены")
-                    successful_sources += 1  # Источник работает, просто нет подходящих новостей
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка источника {source_name}: {e}")
-                failed_sources.append(source_name)
-        
-        # Статистика парсинга
-        logger.info(f"📊 Парсинг завершен: {successful_sources}/{len(self.rss_sources)} источников успешно")
-        if failed_sources:
-            logger.warning(f"⚠️ Недоступные источники: {', '.join(failed_sources)}")
-        
-        return all_news
 
 async def main():
     """Главная функция"""
