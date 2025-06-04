@@ -16,7 +16,6 @@ from threading import Thread, Lock
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 import aiohttp
-from openai import OpenAI
 from telegram import Bot
 from telegram.error import TelegramError, RetryAfter, TimedOut
 
@@ -37,149 +36,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-# ===== СИСТЕМА КОНТРОЛЯ РАСХОДОВ =====
-class CostTracker:
-    """Отслеживание расходов на AI модели"""
-    
-    def __init__(self, max_monthly_budget: float = 5.0, storage_path: str = "cost_data.json"):
-        self.max_monthly_budget = max_monthly_budget
-        self.storage_path = storage_path
-        self.costs = self._load_costs()
-        self._lock = Lock()
-        
-    def _load_costs(self) -> Dict:
-        """Загрузка данных о расходах"""
-        try:
-            if os.path.exists(self.storage_path):
-                with open(self.storage_path, 'r') as f:
-                    return json.load(f)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки данных о расходах: {e}")
-        
-        return {
-            "monthly_costs": {},
-            "daily_costs": {},
-            "model_usage": {}
-        }
-    
-    def _save_costs(self):
-        """Сохранение данных о расходах"""
-        try:
-            with open(self.storage_path, 'w') as f:
-                json.dump(self.costs, f, indent=2)
-        except Exception as e:
-            logger.error(f"Ошибка сохранения данных о расходах: {e}")
-    
-    def get_current_month_key(self) -> str:
-        return datetime.now().strftime("%Y-%m")
-    
-    def can_afford_request(self, estimated_cost: float) -> bool:
-        """Проверка, можем ли позволить себе запрос"""
-        with self._lock:
-            month_key = self.get_current_month_key()
-            current_monthly_cost = self.costs["monthly_costs"].get(month_key, 0.0)
-            return (current_monthly_cost + estimated_cost) <= self.max_monthly_budget
-    
-    def estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Оценка стоимости запроса"""
-        model_prices = {
-            "anthropic/claude-3.5-sonnet": {"input": 3.0, "output": 15.0},
-            "openai/gpt-4o": {"input": 2.5, "output": 10.0},
-            "openai/gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
-            "meta-llama/llama-3.1-8b-instruct:free": {"input": 0.0, "output": 0.0},
-            "microsoft/wizardlm-2-8x22b:free": {"input": 0.0, "output": 0.0},
-        }
-        
-        if model not in model_prices:
-            return (input_tokens * 1.0 + output_tokens * 3.0) / 1_000_000
-        
-        prices = model_prices[model]
-        input_cost = (input_tokens * prices["input"]) / 1_000_000
-        output_cost = (output_tokens * prices["output"]) / 1_000_000
-        return input_cost + output_cost
-    
-    def record_usage(self, model: str, input_tokens: int, output_tokens: int, actual_cost: Optional[float] = None):
-        """Запись использования модели"""
-        if actual_cost is None:
-            actual_cost = self.estimate_cost(model, input_tokens, output_tokens)
-        
-        with self._lock:
-            month_key = self.get_current_month_key()
-            day_key = datetime.now().strftime("%Y-%m-%d")
-            
-            # Обновляем месячные расходы
-            if month_key not in self.costs["monthly_costs"]:
-                self.costs["monthly_costs"][month_key] = 0.0
-            self.costs["monthly_costs"][month_key] += actual_cost
-            
-            # Обновляем дневные расходы
-            if day_key not in self.costs["daily_costs"]:
-                self.costs["daily_costs"][day_key] = 0.0
-            self.costs["daily_costs"][day_key] += actual_cost
-            
-            self._save_costs()
-            
-            # Проверка лимитов и возврат алертов
-            new_total = self.costs["monthly_costs"][month_key]
-            
-        logger.info(f"💰 {model}: ${actual_cost:.4f} (месяц: ${new_total:.2f})")
-        
-        # Возвращаем информацию для алертов
-        return {
-            'cost': actual_cost,
-            'monthly_total': new_total,
-            'budget_percentage': (new_total / self.max_monthly_budget) * 100
-        }
-    
-    def get_remaining_budget(self) -> float:
-        """Получение остатка бюджета"""
-        month_key = self.get_current_month_key()
-        current_spending = self.costs["monthly_costs"].get(month_key, 0.0)
-        return max(0.0, self.max_monthly_budget - current_spending)
-    
-    def suggest_model(self, required_quality: str = "medium") -> str:
-        """Предложение модели в зависимости от бюджета"""
-        remaining = self.get_remaining_budget()
-        
-        if remaining <= 0:
-            return "meta-llama/llama-3.1-8b-instruct:free"
-        
-        if required_quality == "high" and remaining > 1.0:
-            return "anthropic/claude-3.5-sonnet"
-        elif required_quality == "medium" and remaining > 0.1:
-            return "openai/gpt-3.5-turbo"
-        else:
-            return "meta-llama/llama-3.1-8b-instruct:free"
-    
-    def check_budget_alerts(self, usage_info: dict) -> Optional[str]:
-        """Проверка необходимости алертов о бюджете"""
-        percentage = usage_info['budget_percentage']
-        monthly_total = usage_info['monthly_total']
-        
-        # Алерт при 75% бюджета
-        if 75 <= percentage < 90:
-            return f"⚠️ <b>Предупреждение о бюджете</b>\n\n" \
-                   f"Использовано: ${monthly_total:.2f} из ${self.max_monthly_budget}\n" \
-                   f"Процент: {percentage:.1f}%\n" \
-                   f"Остаток: ${self.max_monthly_budget - monthly_total:.2f}"
-        
-        # Критический алерт при 90% бюджета
-        elif 90 <= percentage < 100:
-            return f"🚨 <b>КРИТИЧЕСКОЕ предупреждение!</b>\n\n" \
-                   f"Использовано: ${monthly_total:.2f} из ${self.max_monthly_budget}\n" \
-                   f"Процент: {percentage:.1f}%\n" \
-                   f"Остаток: ${self.max_monthly_budget - monthly_total:.2f}\n" \
-                   f"⚡ Скоро переключение на бесплатную модель!"
-        
-        # Алерт при превышении лимита
-        elif percentage >= 100:
-            return f"🛑 <b>БЮДЖЕТ ПРЕВЫШЕН!</b>\n\n" \
-                   f"Использовано: ${monthly_total:.2f} из ${self.max_monthly_budget}\n" \
-                   f"Превышение: ${monthly_total - self.max_monthly_budget:.2f}\n" \
-                   f"🔄 Бот переключился на бесплатную модель"
-        
-        return None
 
 # ===== RETRY ДЕКОРАТОР =====
 def retry_with_backoff(max_attempts: int = 3, base_delay: float = 1.0):
@@ -244,12 +100,9 @@ class AINewsBot:
         
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
-        self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
         self.newsapi_key = os.getenv('NEWSAPI_KEY')
         
         # Основные настройки
-        self.ai_model = os.getenv('AI_MODEL', 'anthropic/claude-3.5-sonnet')
-        self.max_monthly_cost = float(os.getenv('MAX_MONTHLY_COST', '5.0'))
         self.max_news_per_cycle = int(os.getenv('MAX_NEWS_PER_CYCLE', '10'))
         self.admin_telegram_id = os.getenv('ADMIN_TELEGRAM_ID')
         
@@ -273,27 +126,13 @@ class AINewsBot:
         
         self.bot = Bot(token=self.bot_token)
         
-        # Инициализация системы контроля расходов
-        self.cost_tracker = CostTracker(self.max_monthly_cost)
-        
-        # Инициализация OpenRouter клиента
-        self.client = None
-        if self.openrouter_api_key:
-            self.client = OpenAI(
-                api_key=self.openrouter_api_key,
-                base_url="https://openrouter.ai/api/v1"
-            )
-            logger.info("✅ Claude 3.5 Sonnet инициализирован для News API обработки")
-            logger.info(f"💰 Остаток бюджета: ${self.cost_tracker.get_remaining_budget():.2f}")
-        else:
-            logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется упрощенный режим")
-        
         # Проверка NewsAPI ключа
         if not self.newsapi_key:
             raise ValueError("Необходимо установить NEWSAPI_KEY для получения новостей")
         
-        logger.info("✅ NewsAPI.org режим активирован")
-        logger.info("📈 Качественные новости вместо RSS парсинга")
+        logger.info("🆓 БЕСПЛАТНЫЙ NewsAPI режим активирован!")
+        logger.info("💰 Экономия: $5/месяц (без Claude)")
+        logger.info("📈 Прямая обработка NewsAPI данных")
         
         # ===== NEWS API КОНФИГУРАЦИЯ =====
         
@@ -639,97 +478,36 @@ class AINewsBot:
         else:
             return 'en'
     
-    async def translate_news(self, news_list: List[NewsItem]) -> List[NewsItem]:
-        """Обработка русскоязычных новостей из NewsAPI через Claude"""
+    async def process_news(self, news_list: List[NewsItem]) -> List[NewsItem]:
+        """Простая обработка новостей из NewsAPI (без AI)"""
         for news in news_list:
             try:
-                logger.info(f"🇷🇺 Claude обработка: {news.title[:50]}...")
+                logger.info(f"🇷🇺 Обработка новости: {news.title[:50]}...")
                 
-                # Очистка заголовка (сохраняем для логов)
+                # Очистка заголовка
                 news.translated_title = self.clean_html(news.title)
                 
-                # Обработка через Claude или упрощенная очистка
-                if self.client:
-                    # Создаем качественный пересказ через Claude
-                    full_text = f"{news.title}. {news.description}"
-                    news.translated_description = await self.process_with_claude(full_text, 'ru')
-                else:
-                    # Fallback - простая очистка HTML
-                    news.translated_description = self.clean_html(news.description)
+                # Создаем краткий пересказ из title + description
+                title_clean = self.clean_html(news.title)
+                desc_clean = self.clean_html(news.description) if news.description else ""
                 
-                # Задержка между запросами
-                await asyncio.sleep(2)
+                # Формируем итоговый текст
+                if desc_clean and len(desc_clean) > 10:
+                    # Берем описание если оно есть и информативное
+                    news.translated_description = desc_clean[:200] + ("..." if len(desc_clean) > 200 else "")
+                else:
+                    # Иначе используем заголовок
+                    news.translated_description = title_clean
+                
+                # Небольшая задержка
+                await asyncio.sleep(0.5)
                 
             except Exception as e:
                 logger.error(f"Ошибка при обработке новости: {e}")
                 news.translated_title = self.clean_html(news.title)
-                news.translated_description = self.clean_html(news.description)
+                news.translated_description = self.clean_html(news.description) if news.description else self.clean_html(news.title)
         
         return news_list
-    
-    async def process_with_claude(self, text: str, language: str = "ru") -> str:
-        """Упрощенная обработка русскоязычных новостей через Claude"""
-        try:
-            if len(text) > 2000:
-                text = text[:2000] + "..."
-            
-            # Умный выбор модели с проверкой бюджета
-            model = self.ai_model
-            estimated_input_tokens = len(text) // 4
-            estimated_output_tokens = estimated_input_tokens // 3
-            
-            estimated_cost = self.cost_tracker.estimate_cost(
-                model, estimated_input_tokens, estimated_output_tokens
-            )
-            
-            if not self.cost_tracker.can_afford_request(estimated_cost):
-                logger.warning("🚫 Превышен бюджет, используем бесплатную модель")
-                model = "meta-llama/llama-3.1-8b-instruct:free"
-            
-            # Упрощенный промпт для русскоязычных RSS
-            system_prompt = """Ты помощник для обработки RSS новостей об AI и технологиях.
-
-Создай КРАТКИЙ пересказ новости в формате:
-- ТОЛЬКО текст пересказа, БЕЗ заголовка
-- 1-2 предложения максимум
-- Сохраняй важную информацию (компании, названия, технологии)
-- Простой понятный русский язык
-- Убирай HTML теги и рекламу
-
-Пример: "Разработан новый сервис "Монитор 42" для автоматического отслеживания документации по вырубке деревьев. Система использует ИИ для мониторинга официальных документов и уведомляет пользователей о планируемых изменениях."
-"""
-            
-            user_content = f"Создай краткий пересказ этой русской новости:\n\n{text}"
-            
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                temperature=0.2,
-                max_tokens=400  # Уменьшаем лимит для более кратких ответов
-            )
-            
-            # Запись расходов
-            if hasattr(response, 'usage') and response.usage:
-                usage_info = self.cost_tracker.record_usage(
-                    model, 
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens
-                )
-                
-                # Проверка алертов
-                if usage_info and self.admin_telegram_id:
-                    alert_message = self.cost_tracker.check_budget_alerts(usage_info)
-                    if alert_message:
-                        await self._send_admin_alert(alert_message)
-            
-            return response.choices[0].message.content.strip()
-            
-        except Exception as e:
-            logger.error(f"Ошибка Claude обработки: {e}")
-            return self.clean_html(text)  # Fallback на простую очистку
     
     def clean_html(self, text: str) -> str:
         """Очистка HTML тегов и форматирование текста"""
@@ -896,13 +674,10 @@ class AINewsBot:
             cursor = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'published'")
             total = cursor.fetchone()[0]
         
-        remaining_budget = self.cost_tracker.get_remaining_budget() if hasattr(self, 'cost_tracker') else 0
-        
         return {
             'total_published': total,
             'last_24h': last_24h,
-            'remaining_budget': remaining_budget,
-            'current_model': getattr(self, 'ai_model', 'claude-3.5-sonnet'),
+            'mode': 'free_newsapi',
             'status': 'active'
         }
     
@@ -913,7 +688,7 @@ class AINewsBot:
         try:
             # Логирование состояния
             stats = self.get_statistics()
-            logger.info(f"📊 Запуск News API цикла. БД: {stats['total_published']} новостей, Бюджет: ${stats['remaining_budget']:.2f}")
+            logger.info(f"📊 Запуск БЕСПЛАТНОГО цикла. БД: {stats['total_published']} новостей")
             
             # Парсинг новостей через News API
             logger.info("🔍 Поиск AI новостей через NewsAPI.org...")
@@ -932,29 +707,29 @@ class AINewsBot:
                 logger.info("❌ Все новости уже зарезервированы или опубликованы")
                 return
             
-            # Обработка через Claude (упрощенная)
-            logger.info(f"🤖 Claude обрабатывает {len(reserved_news)} News API новостей...")
-            translated_news = await self.translate_news(reserved_news)
+            # Простая обработка NewsAPI данных
+            logger.info(f"⚡ Обрабатываем {len(reserved_news)} NewsAPI новостей...")
+            processed_news = await self.process_news(reserved_news)
             
             # Публикация
             logger.info(f"📢 Публикуем до {self.max_news_per_cycle} новостей...")
-            published_count = await self.publish_news(translated_news)
+            published_count = await self.publish_news(processed_news)
             
             # Финальная статистика
             cycle_duration = time.time() - cycle_start_time
             new_stats = self.get_statistics()
             
-            logger.info(f"✅ News API цикл завершен за {cycle_duration:.1f}с. Опубликовано: {published_count} новостей")
+            logger.info(f"✅ БЕСПЛАТНЫЙ цикл завершен за {cycle_duration:.1f}с. Опубликовано: {published_count} новостей")
             
             # Отправляем статистику админу
             if self.admin_telegram_id and published_count > 0:
                 await self._send_admin_alert(
-                    f"📊 News API цикл завершен\n"
+                    f"📊 БЕСПЛАТНЫЙ NewsAPI цикл завершен\n"
                     f"• Найдено новостей: {len(raw_news)}\n"
                     f"• Зарезервировано: {len(reserved_news)}\n"
                     f"• Опубликовано: {published_count}\n"
                     f"• Время: {cycle_duration:.1f}с\n"
-                    f"• Остаток бюджета: ${new_stats['remaining_budget']:.2f}"
+                    f"💰 Экономия: $5/месяц"
                 )
             
         except Exception as e:
@@ -1029,9 +804,9 @@ class AINewsBot:
             startup_message = (
                 f"🚀 AI News Bot запущен!\n\n"
                 f"<b>Конфигурация:</b>\n"
-                f"• Режим: NewsAPI.org + Claude\n"
-                f"• Модель: {self.ai_model}\n"
-                f"• Бюджет: ${self.max_monthly_cost}\n"
+                f"• Режим: БЕСПЛАТНЫЙ NewsAPI.org\n"
+                f"• Обработка: Простая очистка данных\n"
+                f"• Экономия: $5/месяц (без Claude)\n"
                 f"• Макс новостей: {self.max_news_per_cycle}\n\n"
                 f"<b>База данных:</b>\n"
                 f"• Путь: {db_diagnostics['db_path']}\n"
