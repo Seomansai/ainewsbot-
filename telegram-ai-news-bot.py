@@ -247,7 +247,7 @@ class AINewsBot:
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
         self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
         
-        # Новые настройки
+        # Основные настройки
         self.ai_model = os.getenv('AI_MODEL', 'anthropic/claude-3.5-sonnet')
         self.max_monthly_cost = float(os.getenv('MAX_MONTHLY_COST', '5.0'))
         self.max_news_per_cycle = int(os.getenv('MAX_NEWS_PER_CYCLE', '10'))
@@ -256,11 +256,11 @@ class AINewsBot:
         # Умный путь к базе данных
         db_path_env = os.getenv('DATABASE_PATH', 'ai_news.db')
         
-        # Проверяем, работаем ли на Render (или другом облачном сервере)
+        # Проверяем, работаем ли на облачном сервере
         if os.path.exists('/opt/render') or os.getenv('RENDER'):
-            # На Render используем абсолютный путь для постоянного хранения
+            # На Render используем абсолютный путь
             self.db_path = '/opt/render/project/ai_news.db'
-        elif os.path.exists('/app'):  # Heroku
+        elif os.path.exists('/app'):  # Railway/Heroku
             self.db_path = '/app/ai_news.db'
         else:
             # Локальная разработка
@@ -283,12 +283,12 @@ class AINewsBot:
                 api_key=self.openrouter_api_key,
                 base_url="https://openrouter.ai/api/v1"
             )
-            logger.info("✅ OpenRouter клиент инициализирован")
+            logger.info("✅ Claude 3.5 Sonnet инициализирован для RSS обработки")
             logger.info(f"💰 Остаток бюджета: ${self.cost_tracker.get_remaining_budget():.2f}")
         else:
-            logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется Google Translator")
+            logger.warning("⚠️ OPENROUTER_API_KEY не найден, используется упрощенный режим")
         
-        # RSS источники AI новостей (обновлено после тестирования)
+        # RSS источники AI новостей (ТОП-20 русскоязычных)
         self.rss_sources = {
             # ===== ТОП-20 РУССКОЯЗЫЧНЫХ ИСТОЧНИКОВ AI И ТЕХНОЛОГИЙ =====
             
@@ -657,214 +657,8 @@ class AINewsBot:
         ]
         return source_name in russian_sources
     
-    async def translate_text(self, text: str, quality: str = "medium", language: str = "en") -> str:
-        """Создание краткого пересказа с контролем расходов"""
-        try:
-            if len(text) > 3000:
-                text = text[:3000] + "..."
-            
-            if self.client:
-                # Оценка токенов
-                estimated_input_tokens = len(text) // 4
-                estimated_output_tokens = estimated_input_tokens // 2
-                
-                # Умный выбор модели
-                model = self.cost_tracker.suggest_model(quality)
-                
-                # Переопределяем модель если указана в переменных окружения
-                if hasattr(self, 'ai_model') and self.ai_model:
-                    model = self.ai_model
-                
-                # Проверка бюджета
-                estimated_cost = self.cost_tracker.estimate_cost(
-                    model, estimated_input_tokens, estimated_output_tokens
-                )
-                
-                if not self.cost_tracker.can_afford_request(estimated_cost):
-                    logger.warning("🚫 Превышен месячный бюджет, используем бесплатную модель")
-                    model = "meta-llama/llama-3.1-8b-instruct:free"
-                
-                # API запрос с retry
-                response = await self._make_api_request(model, text, language)
-                
-                # Запись расходов
-                if hasattr(response, 'usage') and response.usage:
-                    usage_info = self.cost_tracker.record_usage(
-                        model, 
-                        response.usage.prompt_tokens,
-                        response.usage.completion_tokens
-                    )
-                    
-                    # Проверка на алерты о бюджете
-                    if usage_info and self.admin_telegram_id:
-                        alert_message = self.cost_tracker.check_budget_alerts(usage_info)
-                        if alert_message:
-                            await self._send_admin_alert(alert_message)
-                
-                return response.choices[0].message.content.strip()
-            else:
-                # Fallback на Google Translator для английских новостей
-                if language == 'en':
-                    from deep_translator import GoogleTranslator
-                    translator = GoogleTranslator(source='en', target='ru')
-                    return translator.translate(text)
-                else:
-                    # Для русских новостей возвращаем как есть
-                    return text
-                
-        except Exception as e:
-            logger.error(f"Ошибка создания пересказа: {e}")
-            # Fallback обработка
-            try:
-                if language == 'en':
-                    from deep_translator import GoogleTranslator
-                    translator = GoogleTranslator(source='en', target='ru')
-                    return translator.translate(text)
-                else:
-                    return text
-            except Exception as fallback_error:
-                logger.error(f"Ошибка fallback обработки: {fallback_error}")
-                return text  # Возвращаем оригинальный текст при ошибке
-    
-    @retry_with_backoff(max_attempts=3, base_delay=1.0)
-    async def _make_api_request(self, model: str, text: str, language: str = "en"):
-        """API запрос с retry и rate limiting"""
-        try:
-            if language == 'ru':
-                # Для русских новостей - создаем краткий пересказ
-                system_prompt = """Ты опытный технический журналист, специализирующийся на новостях об искусственном интеллекте.
-
-ЗАДАЧА: Создай краткий, информативный пересказ русской новости об ИИ.
-
-ПРАВИЛА:
-1. Пиши простым, понятным языком
-2. Выдели главную суть новости в 1-2 предложениях
-3. Добавь важные детали (цифры, компании, технологии)
-4. Сохраняй технические термины: ИИ, ML, API, GPU, LLM, нейросеть
-5. Объем: 2-4 предложения максимум
-6. Стиль: как краткая новостная сводка
-7. Убери лишние детали и рекламные элементы
-
-ПРИМЕР:
-Оригинал: "Яндекс объявил о выпуске новой версии YandexGPT с улучшенными возможностями..."
-Пересказ: "Яндекс представил обновленную версию YandexGPT с улучшенными возможностями понимания контекста. Новая модель показывает значительно лучшие результаты в задачах анализа текста."
-
-Создавай пересказ для русскоязычной аудитории."""
-                
-                user_content = f"Создай краткий пересказ этой новости:\n\n{text}"
-            else:
-                # Для английских новостей - переводим в краткий пересказ
-                system_prompt = """Ты опытный технический журналист, специализирующийся на новостях об искусственном интеллекте.
-
-ЗАДАЧА: Создай краткий, информативный пересказ новости на русском языке.
-
-ПРАВИЛА:
-1. Пиши простым, понятным языком
-2. Выдели главную суть новости в 1-2 предложениях
-3. Добавь важные детали (цифры, компании, технологии)
-4. Сохраняй технические термины: AI, ML, API, GPU, LLM
-5. Объем: 2-4 предложения максимум
-6. Стиль: как краткая новостная сводка
-
-ПРИМЕР:
-Оригинал: "OpenAI releases GPT-4 Turbo with improved reasoning..."
-Пересказ: "Компания OpenAI представила обновленную версию GPT-4 Turbo с улучшенными возможностями логического мышления. Новая модель демонстрирует значительно лучшую производительность в задачах, требующих многоступенчатого анализа."
-
-Создавай пересказ для русскоязычной аудитории."""
-                
-                user_content = f"Создай краткий пересказ этой новости:\n\nЗаголовок: {text.split('.')[0] if '.' in text else text[:100]}\nТекст: {text}"
-            
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                temperature=0.3,
-                max_tokens=800
-            )
-            
-            # Rate limiting
-            await asyncio.sleep(0.5)
-            return response
-            
-        except Exception as e:
-            logger.error(f"Ошибка API запроса к модели {model}: {e}")
-            raise
-    
-    async def parse_news_sources(self) -> List[NewsItem]:
-        """Парсинг всех источников новостей"""
-        all_news = []
-        successful_sources = 0
-        failed_sources = []
-        
-        for source_name, rss_url in self.rss_sources.items():
-            try:
-                logger.info(f"🔍 Парсинг источника: {source_name}")
-                entries = await self.fetch_rss_feed(rss_url)
-                
-                if not entries:
-                    logger.warning(f"⚠️ Источник {source_name} вернул пустой результат")
-                    failed_sources.append(source_name)
-                    continue
-                
-                source_news_count = 0
-                max_news_per_source = 5  # Максимум 5 новостей с одного источника
-                
-                for entry in entries:
-                    # Останавливаемся если достигли лимита для источника
-                    if source_news_count >= max_news_per_source:
-                        logger.info(f"🔒 Лимит для {source_name} достигнут ({max_news_per_source} новостей)")
-                        break
-                        
-                    try:
-                        # Парсинг даты публикации
-                        published = datetime.now()
-                        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                            published = datetime(*entry.published_parsed[:6])
-                        
-                        # Создание объекта новости
-                        news = NewsItem(
-                            title=entry.get('title', ''),
-                            description=entry.get('summary', ''),
-                            link=entry.get('link', ''),
-                            published=published,
-                            source=source_name
-                        )
-                        
-                        # Строгая фильтрация по AI тематике
-                        if self.is_ai_related(news.title, news.description):
-                            # Проверка на дубликаты
-                            if not self.is_already_published(news.link, news.title):
-                                # Проверка актуальности (не старше 24 часов)
-                                if published > datetime.now() - timedelta(hours=24):
-                                    all_news.append(news)
-                                    source_news_count += 1
-                                    logger.info(f"✅ AI новость #{source_news_count}: {news.title[:50]}...")
-                    
-                    except Exception as e:
-                        logger.error(f"Ошибка при обработке новости из {source_name}: {e}")
-                
-                if source_news_count > 0:
-                    logger.info(f"✅ {source_name}: найдено {source_news_count} AI новостей")
-                    successful_sources += 1
-                else:
-                    logger.info(f"ℹ️ {source_name}: AI новости не найдены")
-                    successful_sources += 1  # Источник работает, просто нет подходящих новостей
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка источника {source_name}: {e}")
-                failed_sources.append(source_name)
-        
-        # Статистика парсинга
-        logger.info(f"📊 Парсинг завершен: {successful_sources}/{len(self.rss_sources)} источников успешно")
-        if failed_sources:
-            logger.warning(f"⚠️ Недоступные источники: {', '.join(failed_sources)}")
-        
-        return all_news
-    
     async def translate_news(self, news_list: List[NewsItem]) -> List[NewsItem]:
-        """Создание пересказов новостей на русском языке"""
+        """Упрощенная обработка RSS с Claude - прямой перевод/пересказ"""
         for news in news_list:
             try:
                 # Определяем язык и источник
@@ -873,41 +667,133 @@ class AINewsBot:
                 
                 # Логирование
                 lang_emoji = "🇷🇺" if language == 'ru' or is_russian else "🇺🇸"
-                logger.info(f"{lang_emoji} Создаем пересказ новости: {news.title[:50]}...")
+                logger.info(f"{lang_emoji} Claude обработка: {news.title[:50]}...")
                 
-                # Создание пересказа заголовка (используем исходный заголовок)
-                news.translated_title = news.title
+                # Очистка заголовка
+                news.translated_title = self.clean_html(news.title)
                 
-                # Создание пересказа описания
-                full_text = f"{news.title}. {news.description}"
+                # Обработка через Claude или упрощенная очистка
+                if self.client:
+                    # Создаем качественный пересказ через Claude
+                    full_text = f"{news.title}. {news.description}"
+                    detected_lang = 'ru' if (language == 'ru' or is_russian) else 'en'
+                    news.translated_description = await self.process_with_claude(full_text, detected_lang)
+                else:
+                    # Fallback - простая очистка HTML
+                    news.translated_description = self.clean_html(news.description)
                 
-                # Используем соответствующий язык для обработки
-                detected_lang = 'ru' if (language == 'ru' or is_russian) else 'en'
-                news.translated_description = await self.translate_text(full_text, "medium", detected_lang)
-                
-                # Небольшая задержка между запросами
+                # Задержка между запросами
                 await asyncio.sleep(2)
                 
             except Exception as e:
-                logger.error(f"Ошибка при создании пересказа новости: {e}")
-                news.translated_title = news.title
-                news.translated_description = news.description
+                logger.error(f"Ошибка при обработке новости: {e}")
+                news.translated_title = self.clean_html(news.title)
+                news.translated_description = self.clean_html(news.description)
         
         return news_list
     
-    def format_message(self, news: NewsItem) -> str:
-        """Форматирование сообщения для Telegram"""
-        # Очистка HTML тегов из описания
+    async def process_with_claude(self, text: str, language: str = "en") -> str:
+        """Упрощенная обработка через Claude"""
+        try:
+            if len(text) > 2000:
+                text = text[:2000] + "..."
+            
+            # Умный выбор модели с проверкой бюджета
+            model = self.ai_model
+            estimated_input_tokens = len(text) // 4
+            estimated_output_tokens = estimated_input_tokens // 3
+            
+            estimated_cost = self.cost_tracker.estimate_cost(
+                model, estimated_input_tokens, estimated_output_tokens
+            )
+            
+            if not self.cost_tracker.can_afford_request(estimated_cost):
+                logger.warning("🚫 Превышен бюджет, используем бесплатную модель")
+                model = "meta-llama/llama-3.1-8b-instruct:free"
+            
+            # Упрощенный промпт для RSS
+            if language == 'ru':
+                system_prompt = """Ты помощник для обработки RSS новостей. 
+
+Создай краткий, читаемый пересказ русской новости об AI/технологиях:
+- 2-3 предложения максимум
+- Сохраняй важную информацию (компании, цифры, технологии)
+- Убирай HTML теги и рекламу
+- Простой понятный язык"""
+                
+                user_content = f"Обработай эту RSS новость:\n\n{text}"
+            else:
+                system_prompt = """Ты помощник для обработки RSS новостей.
+
+Переведи английскую новость на русский и создай краткий пересказ:
+- 2-3 предложения максимум  
+- Сохраняй важную информацию (компании, цифры, технологии)
+- Убирай HTML теги и рекламу
+- Простой понятный русский язык"""
+                
+                user_content = f"Переведи и обработай эту RSS новость:\n\n{text}"
+            
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.2,
+                max_tokens=600
+            )
+            
+            # Запись расходов
+            if hasattr(response, 'usage') and response.usage:
+                usage_info = self.cost_tracker.record_usage(
+                    model, 
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens
+                )
+                
+                # Проверка алертов
+                if usage_info and self.admin_telegram_id:
+                    alert_message = self.cost_tracker.check_budget_alerts(usage_info)
+                    if alert_message:
+                        await self._send_admin_alert(alert_message)
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Ошибка Claude обработки: {e}")
+            return self.clean_html(text)  # Fallback на простую очистку
+    
+    def clean_html(self, text: str) -> str:
+        """Очистка HTML тегов и форматирование текста"""
+        if not text:
+            return ""
+        
+        import re
         import html
         
-        # Экранирование HTML символов
-        title = html.escape(news.translated_title)
-        summary = html.escape(news.translated_description)
+        # Декодируем HTML entities
+        text = html.unescape(text)
         
-        # Удаление HTML тегов
-        import re
-        summary = re.sub(r'<[^>]+>', '', summary)
-        title = re.sub(r'<[^>]+>', '', title)
+        # Убираем HTML теги
+        text = re.sub(r'<[^>]+>', '', text)
+        
+        # Убираем лишние пробелы и переносы строк
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        
+        # Ограничиваем длину (Telegram лимит)
+        if len(text) > 800:
+            text = text[:800] + "..."
+        
+        return text
+    
+    def format_message(self, news: NewsItem) -> str:
+        """Форматирование RSS сообщения для Telegram"""
+        import html
+        
+        # Экранирование для HTML режима Telegram
+        title = html.escape(news.translated_title) if news.translated_title else html.escape(news.title)
+        description = html.escape(news.translated_description) if news.translated_description else html.escape(news.description)
         
         # Определение флага источника
         is_russian = self.is_russian_source(news.source)
@@ -916,13 +802,17 @@ class AINewsBot:
         # Форматирование сообщения
         message = f"🤖 <b>AI Новости</b>\n\n"
         
-        if summary:
-            # Основной пересказ
-            message += f"{summary}\n\n"
+        # Заголовок
+        if title:
+            message += f"<b>{title}</b>\n\n"
         
-        # Информация об источнике с флагом
+        # Описание (если есть)
+        if description and len(description.strip()) > 0:
+            message += f"{description}\n\n"
+        
+        # Информация об источнике
         message += f"{source_flag} <b>Источник:</b> {news.source}\n"
-        message += f"🔗 <b><a href='{news.link}'>Читать оригинал статьи</a></b>"
+        message += f"🔗 <a href='{news.link}'>Читать полностью</a>"
         
         return message
     
@@ -1051,13 +941,13 @@ class AINewsBot:
             cursor = self.conn.execute("SELECT COUNT(*) FROM published_news WHERE status = 'published'")
             total = cursor.fetchone()[0]
         
-        remaining_budget = self.cost_tracker.get_remaining_budget()
+        remaining_budget = self.cost_tracker.get_remaining_budget() if hasattr(self, 'cost_tracker') else 0
         
         return {
             'total_published': total,
             'last_24h': last_24h,
             'remaining_budget': remaining_budget,
-            'current_model': getattr(self, 'ai_model', 'not_set'),
+            'current_model': getattr(self, 'ai_model', 'claude-3.5-sonnet'),
             'status': 'active'
         }
     
@@ -1087,8 +977,8 @@ class AINewsBot:
                 logger.info("❌ Все новости уже зарезервированы или опубликованы")
                 return
             
-            # Создание пересказов только для зарезервированных новостей
-            logger.info(f"🤖 Создаем пересказы для {len(reserved_news)} зарезервированных новостей...")
+            # Обработка через Claude (упрощенная)
+            logger.info(f"🤖 Claude обрабатывает {len(reserved_news)} RSS новостей...")
             translated_news = await self.translate_news(reserved_news)
             
             # Публикация
@@ -1104,7 +994,7 @@ class AINewsBot:
             # Отправляем статистику админу
             if self.admin_telegram_id and published_count > 0:
                 await self._send_admin_alert(
-                    f"📊 Цикл завершен\n"
+                    f"📊 Claude RSS цикл завершен\n"
                     f"• Найдено новостей: {len(raw_news)}\n"
                     f"• Зарезервировано: {len(reserved_news)}\n"
                     f"• Опубликовано: {published_count}\n"
@@ -1184,6 +1074,7 @@ class AINewsBot:
             startup_message = (
                 f"🚀 AI News Bot запущен!\n\n"
                 f"<b>Конфигурация:</b>\n"
+                f"• Режим: Claude RSS обработка\n"
                 f"• Модель: {self.ai_model}\n"
                 f"• Бюджет: ${self.max_monthly_cost}\n"
                 f"• Макс новостей: {self.max_news_per_cycle}\n\n"
@@ -1221,6 +1112,77 @@ class AINewsBot:
                 if self.admin_telegram_id:
                     await self._send_admin_alert(f"💥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
                 await asyncio.sleep(300)  # Ожидание 5 минут при ошибке
+
+    async def parse_news_sources(self) -> List[NewsItem]:
+        """Парсинг всех источников новостей"""
+        all_news = []
+        successful_sources = 0
+        failed_sources = []
+        
+        for source_name, rss_url in self.rss_sources.items():
+            try:
+                logger.info(f"🔍 Парсинг источника: {source_name}")
+                entries = await self.fetch_rss_feed(rss_url)
+                
+                if not entries:
+                    logger.warning(f"⚠️ Источник {source_name} вернул пустой результат")
+                    failed_sources.append(source_name)
+                    continue
+                
+                source_news_count = 0
+                max_news_per_source = 5  # Максимум 5 новостей с одного источника
+                
+                for entry in entries:
+                    # Останавливаемся если достигли лимита для источника
+                    if source_news_count >= max_news_per_source:
+                        logger.info(f"🔒 Лимит для {source_name} достигнут ({max_news_per_source} новостей)")
+                        break
+                        
+                    try:
+                        # Парсинг даты публикации
+                        published = datetime.now()
+                        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                            published = datetime(*entry.published_parsed[:6])
+                        
+                        # Создание объекта новости
+                        news = NewsItem(
+                            title=entry.get('title', ''),
+                            description=entry.get('summary', ''),
+                            link=entry.get('link', ''),
+                            published=published,
+                            source=source_name
+                        )
+                        
+                        # Строгая фильтрация по AI тематике
+                        if self.is_ai_related(news.title, news.description):
+                            # Проверка на дубликаты
+                            if not self.is_already_published(news.link, news.title):
+                                # Проверка актуальности (не старше 24 часов)
+                                if published > datetime.now() - timedelta(hours=24):
+                                    all_news.append(news)
+                                    source_news_count += 1
+                                    logger.info(f"✅ AI новость #{source_news_count}: {news.title[:50]}...")
+                    
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке новости из {source_name}: {e}")
+                
+                if source_news_count > 0:
+                    logger.info(f"✅ {source_name}: найдено {source_news_count} AI новостей")
+                    successful_sources += 1
+                else:
+                    logger.info(f"ℹ️ {source_name}: AI новости не найдены")
+                    successful_sources += 1  # Источник работает, просто нет подходящих новостей
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка источника {source_name}: {e}")
+                failed_sources.append(source_name)
+        
+        # Статистика парсинга
+        logger.info(f"📊 Парсинг завершен: {successful_sources}/{len(self.rss_sources)} источников успешно")
+        if failed_sources:
+            logger.warning(f"⚠️ Недоступные источники: {', '.join(failed_sources)}")
+        
+        return all_news
 
 async def main():
     """Главная функция"""
