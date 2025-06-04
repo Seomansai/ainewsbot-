@@ -290,24 +290,41 @@ class AINewsBot:
         
         # RSS источники AI новостей (обновлено после тестирования)
         self.rss_sources = {
-            # Английские источники (проверенные и работающие)
-            'AI News': 'https://www.artificialintelligence-news.com/feed/',
-            'MIT Technology Review': 'https://www.technologyreview.com/feed/',
-            'TechCrunch AI': 'https://techcrunch.com/category/artificial-intelligence/feed/',
-            'TechCrunch Main': 'https://techcrunch.com/feed/',  # Новый: много свежих новостей
-            'Ars Technica': 'https://feeds.arstechnica.com/arstechnica/technology-lab',
-            'WIRED AI': 'https://www.wired.com/feed/tag/ai/latest/rss',  # Новый: специализированный AI
-            'IEEE Spectrum': 'https://spectrum.ieee.org/rss/fulltext',  # Новый: техническая экспертиза
-            'Analytics India': 'https://analyticsindiamag.com/feed/',  # Новый: AI аналитика
+            # ===== ТОП-20 РУССКОЯЗЫЧНЫХ ИСТОЧНИКОВ AI И ТЕХНОЛОГИЙ =====
             
-            # Российские источники (работающие)
+            # 🏆 Хабр - главные AI хабы
             'Хабр AI': 'https://habr.com/ru/rss/hub/artificial_intelligence/',
             'Хабр ML': 'https://habr.com/ru/rss/hub/machine_learning/',
             'Хабр DataScience': 'https://habr.com/ru/rss/hub/data_mining/',
-            'Хакер': 'https://xakep.ru/feed/',  # Новый: кибербезопасность и технологии
-            'CNews AI': 'https://www.cnews.ru/inc/rss/news.xml',
-            '3DNews': 'https://3dnews.ru/news/rss/',
+            'Хабр Neural Networks': 'https://habr.com/ru/rss/hub/neural_networks/',
+            'Хабр Python': 'https://habr.com/ru/rss/hub/python/',
+            
+            # 🔥 Профильные tech-издания
             'Tproger': 'https://tproger.ru/feed/',
+            'VC.ru Tech': 'https://vc.ru/feed',
+            'DTF Tech': 'https://dtf.ru/rss/all',
+            
+            # 📰 Технологические новостные порталы
+            'CNews': 'https://www.cnews.ru/inc/rss/news.xml',
+            '3DNews': 'https://3dnews.ru/news/rss/',
+            'Digit.ru': 'https://digit.ru/rss/',
+            'Hi-Tech Mail.ru': 'https://hi-tech.mail.ru/rss/',
+            
+            # 🛡️ Кибербезопасность и хакерство
+            'Xakep.ru': 'https://xakep.ru/feed/',
+            'SecurityLab': 'https://www.securitylab.ru/rss.php',
+            
+            # 🎮 Игровая индустрия и технологии
+            'StopGame Tech': 'https://stopgame.ru/rss/news.xml',
+            'Игромания Tech': 'https://www.igromania.ru/rss/news.xml',
+            
+            # 💼 Стартапы и бизнес
+            'RB.ru Tech': 'https://rb.ru/feeds/all/',
+            'Forbes Russia Tech': 'https://www.forbes.ru/rss',
+            
+            # 🔬 Научно-популярные
+            'N+1 Tech': 'https://nplus1.ru/rss',
+            'Популярная Механика': 'https://www.popmech.ru/rss/',
         }
         
         # Строгие ключевые слова для AI (только релевантные)
@@ -323,15 +340,38 @@ class AINewsBot:
             'robotics', 'automation', 'data science', 'big data',
             'cybersecurity ai', 'ai security', 'ai ethics',
             
-            # Русские AI термины
+            # ===== РАСШИРЕННЫЕ РУССКИЕ AI ТЕРМИНЫ =====
+            # Основные
             'искусственный интеллект', 'машинное обучение', 'нейронная сеть', 'нейросеть',
             'глубокое обучение', 'чатгпт', 'gpt', 'клод', 'гемини',
             'языковая модель', 'генеративный ии', 'трансформер',
             'компьютерное зрение', 'обработка естественного языка',
+            
+            # Российские AI платформы
             'yandex gpt', 'яндекс гпт', 'gigachat', 'гигачат',
-            'kandinsky', 'кандинский', 'rubert', 'алгоритм',
-            'роботика', 'автоматизация', 'анализ данных', 'большие данные',
-            'кибербезопасность ии', 'этика ии'
+            'kandinsky', 'кандинский', 'rubert', 'rudalcore',
+            'сбер ai', 'сберapi', 'salute ai',
+            
+            # Технологические
+            'алгоритм', 'роботика', 'автоматизация', 'анализ данных', 'большие данные',
+            'кибербезопасность ии', 'этика ии', 'python', 'tensorflow', 'pytorch',
+            'машинное зрение', 'распознавание речи', 'синтез речи',
+            'рекомендательная система', 'предиктивная аналитика',
+            
+            # Бизнес и стартапы
+            'стартап ai', 'ии стартап', 'tech стартап', 'финтех',
+            'edtech', 'healthtech', 'regtech', 'insurtech',
+            'цифровизация', 'диджитализация', 'цифровая трансформация',
+            
+            # Конкретные технологии
+            'блокчейн', 'криптовалюта', 'nft', 'метавселенная', 'vr', 'ar',
+            'квантовые вычисления', 'edge computing', 'iot', 'интернет вещей',
+            '5g', '6g', 'облачные вычисления', 'микросервисы',
+            
+            # Программирование и разработка
+            'фронтенд', 'бэкенд', 'fullstack', 'devops', 'mlops',
+            'api', 'sdk', 'framework', 'библиотека', 'opensource',
+            'github', 'gitlab', 'docker', 'kubernetes'
         ]
         
         # Исключающие слова (новости с этими словами НЕ относятся к AI)
@@ -599,7 +639,22 @@ class AINewsBot:
     
     def is_russian_source(self, source_name: str) -> bool:
         """Проверка, является ли источник российским"""
-        russian_sources = ['Хабр AI', 'Хабр ML', 'Хабр DataScience', 'Хакер', 'CNews AI', '3DNews', 'Tproger']
+        russian_sources = [
+            # Хабр хабы
+            'Хабр AI', 'Хабр ML', 'Хабр DataScience', 'Хабр Neural Networks', 'Хабр Python',
+            # Tech издания
+            'Tproger', 'VC.ru Tech', 'DTF Tech',
+            # Новостные порталы
+            'CNews', '3DNews', 'Digit.ru', 'Hi-Tech Mail.ru',
+            # Кибербезопасность
+            'Xakep.ru', 'SecurityLab',
+            # Игры и технологии
+            'StopGame Tech', 'Игромания Tech',
+            # Бизнес
+            'RB.ru Tech', 'Forbes Russia Tech',
+            # Научпоп
+            'N+1 Tech', 'Популярная Механика'
+        ]
         return source_name in russian_sources
     
     async def translate_text(self, text: str, quality: str = "medium", language: str = "en") -> str:
