@@ -28,7 +28,7 @@
    TELEGRAM_BOT_TOKEN=ваш_токен_бота
    TELEGRAM_CHANNEL_ID=ваш_id_канала
    OPENROUTER_API_KEY=ваш_ключ_api
-   AI_MODEL=meta-llama/llama-3.1-8b-instruct:free
+   AI_MODEL=anthropic/claude-3.5-sonnet
    MAX_MONTHLY_COST=5.0
    ADMIN_TELEGRAM_ID=ваш_telegram_id
    DATABASE_PATH=/opt/render/project/src/ai_news.db
@@ -84,7 +84,7 @@ nano .env
 TELEGRAM_BOT_TOKEN=ваш_токен
 TELEGRAM_CHANNEL_ID=ваш_канал
 OPENROUTER_API_KEY=ваш_ключ
-AI_MODEL=meta-llama/llama-3.1-8b-instruct:free
+AI_MODEL=anthropic/claude-3.5-sonnet
 MAX_MONTHLY_COST=5.0
 ADMIN_TELEGRAM_ID=ваш_id
 DATABASE_PATH=./ai_news.db
